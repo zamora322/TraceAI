@@ -24,8 +24,8 @@ El proyecto está diseñado bajo una arquitectura modular desacoplada:
 graph TD
     User([Usuario / Navegador]) -->|HTTP / Interacción UI| Frontend[Frontend: Next.js + Tailwind CSS + TypeScript]
     Frontend -->|REST API / Form-Data| Backend[Backend: FastAPI + Python 3.12]
-    Backend -->|Imagen temporal| Preprocess[Preprocesamiento: OpenCV + NumPy<br>Filtro Bilateral + Sharpening]
-    Preprocess -->|Imagen optimizada| Engine[Motor de Vectorización: vtracer / IA]
+    Backend -->|Imagen temporal| Preprocess[Preprocesamiento: OpenCV + NumPy<br>Mean Shift Filtering: sp=15, sr=40]
+    Preprocess -->|Plastas sólidas de color| Engine[Motor de Vectorización: vtracer / IA]
     Engine -->|Salida SVG optimizada| Backend
     Backend -->|Stream / Payload SVG| Frontend
     Frontend -->|Renderizado y Descarga| User
@@ -35,7 +35,7 @@ graph TD
 
 | Capa | Tecnologías | Propósito |
 | :--- | :--- | :--- |
-| **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [OpenCV](https://opencv.org/), [NumPy](https://numpy.org/), [vtracer](https://github.com/visioncortex/vtracer) | API REST de alto rendimiento, preprocesamiento con filtros de bordes y reducción de ruido, y pipeline de vectorización de imágenes. |
+| **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [OpenCV](https://opencv.org/), [NumPy](https://numpy.org/), [vtracer](https://github.com/visioncortex/vtracer) | API REST de alto rendimiento, preprocesamiento con segmentación Mean Shift (estilo Vector Magic) y pipeline de vectorización de imágenes. |
 | **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/) | Interfaz SaaS reactiva, carga interactiva de archivos, visualizador de SVG en tiempo real y controles de exportación. |
 
 ---
@@ -139,7 +139,7 @@ Asegúrate de tener instalados los siguientes componentes en tu entorno:
 | Método | Endpoint | Parámetros / Payload | Descripción | Respuesta Ejemplo |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/` | Ninguno | Verificación de estado del servicio (Health Check). | `{"status": "TraceAI Backend API Online"}` |
-| `POST` | `/api/vectorize` | `multipart/form-data`<br>`file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB) | Preprocesa la imagen con OpenCV (filtro bilateral de ruido y realce de bordes con kernel 3x3) y la vectoriza a curvas Bézier SVG (`vtracer`) con limpieza segura de temporales. | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
+| `POST` | `/api/vectorize` | `multipart/form-data`<br>`file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB) | Preprocesa la imagen con segmentación Mean Shift (`pyrMeanShiftFiltering`: sp=15, sr=40) y la vectoriza a curvas Bézier SVG (`vtracer` con `filter_speckle=10` y `color_precision=4`) con limpieza segura de temporales. | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
 
 ---
 

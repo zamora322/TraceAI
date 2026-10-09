@@ -94,36 +94,48 @@ def validate_image_header(header: bytes) -> bool:
 
 
 def preprocess_image(input_path: str, output_path: str) -> None:
-    """Preprocesa la imagen de entrada usando OpenCV para mejorar la calidad de vectorización.
+    """Preprocesa la imagen usando Mean Shift Filtering (cv2.pyrMeanShiftFiltering).
 
-    - Paso A (Reducción de ruido): Aplica un filtro bilateral (cv2.bilateralFilter)
-      con d=9, sigmaColor=75 y sigmaSpace=75 para suavizar texturas y artefactos
-      de compresión manteniendo nítidos los bordes.
-    - Paso B (Afilado / Sharpening): Convoluciona con un kernel de realce 3x3 mediante
-      cv2.filter2D para enfatizar transiciones y bordes antes del trazado de curvas.
-    - Preserva el canal alfa en formatos como PNG con transparencia.
+    - Convierte el espacio de color de BGR a RGB para no invertir tonalidades.
+    - Aplica agrupamiento de colores (Mean Shift Segmentation) con sp=15 y sr=40
+      para aplanar texturas y gradientes complejos en regiones de colores sólidos (estilo Vector Magic).
+    - Preserva el canal alfa (transparencia) si la imagen contiene canal Alpha.
+    - Convierte de RGB a BGR antes del guardado para mantener la fidelidad cromática con cv2.imwrite.
     """
     img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise ValueError(f"No fue posible cargar la imagen con OpenCV desde '{input_path}'.")
 
-    # Kernel de afilado para destacar contornos
-    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]], dtype=np.float32)
+    has_alpha = False
+    alpha = None
 
-    # Procesar preservando canal alfa en imágenes transparentes (BGRA)
     if len(img.shape) == 3 and img.shape[2] == 4:
+        has_alpha = True
         bgr = img[:, :, :3]
         alpha = img[:, :, 3]
-        filtered_bgr = cv2.bilateralFilter(bgr, d=9, sigmaColor=75, sigmaSpace=75)
-        sharpened_bgr = cv2.filter2D(filtered_bgr, -1, kernel)
-        processed = cv2.merge([sharpened_bgr, alpha])
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     elif len(img.shape) == 3 and img.shape[2] == 3:
-        filtered = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
-        processed = cv2.filter2D(filtered, -1, kernel)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    elif len(img.shape) == 2:
+        rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
     else:
-        # Grayscale / 1 solo canal
-        filtered = cv2.bilateralFilter(img, d=9, sigmaColor=75, sigmaSpace=75)
-        processed = cv2.filter2D(filtered, -1, kernel)
+        raise ValueError(f"Estructura o canales de imagen no soportados: {img.shape}")
+
+    # Agrupamiento de colores con Mean Shift Filtering (sp=15 radio espacial, sr=40 radio de color)
+    filtered_rgb = cv2.pyrMeanShiftFiltering(rgb, sp=15, sr=40)
+
+    # Conversión de vuelta a BGR para guardar fielmente mediante cv2.imwrite
+    filtered_bgr = cv2.cvtColor(filtered_rgb, cv2.COLOR_RGB2BGR)
+
+    if has_alpha and alpha is not None:
+        processed = cv2.merge([
+            filtered_bgr[:, :, 0],
+            filtered_bgr[:, :, 1],
+            filtered_bgr[:, :, 2],
+            alpha,
+        ])
+    else:
+        processed = filtered_bgr
 
     success = cv2.imwrite(output_path, processed)
     if not success:
@@ -173,8 +185,8 @@ async def vectorize_image(
 
     - **Validaciones de Seguridad:** Comprueba extensión permitida, tipo MIME, tamaño y firmas binarias (*magic bytes*).
     - **Almacenamiento Temporal Seguro:** Guarda la imagen temporalmente en disco mediante un identificador seguro.
-    - **Preprocesamiento con OpenCV:** Filtro bilateral para reducción de ruido y kernel de afilado (*sharpening*) para bordes nítidos.
-    - **Vectorización Avanzada (`vtracer`):** Configurado con modo `spline` para curvas Bézier suaves, modo de color completo y filtro de ruido moderado.
+    - **Preprocesamiento con Mean Shift (OpenCV):** Agrupamiento de color con `pyrMeanShiftFiltering` (sp=15, sr=40) para transformar degradados y texturas complejas en regiones sólidas y limpias, preservando el canal Alpha.
+    - **Vectorización Optimizada (`vtracer`):** Configurado con `filter_speckle=10` para descartar artefactos pequeños, `color_precision=4` y modo `spline` para curvas Bézier exactas.
     - **Limpieza Automática:** Tarea en segundo plano (*BackgroundTasks*) que elimina de inmediato los archivos temporales tras la transmisión al cliente.
     """
     if not file.filename:
@@ -252,8 +264,8 @@ async def vectorize_image(
             colormode="color",
             hierarchical="stacked",
             mode="spline",
-            filter_speckle=4,
-            color_precision=6,
+            filter_speckle=10,
+            color_precision=4,
             layer_difference=16,
             corner_threshold=60,
             length_threshold=4.0,
