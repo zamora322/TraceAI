@@ -187,15 +187,102 @@ def validate_image_header(header: bytes) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def step_a_remove_background(image: Image.Image) -> Image.Image:
-    """Paso A: Elimina el fondo de la imagen utilizando rembg (IA).
+def clean_and_refine_alpha_matte(
+    rgba_image: Image.Image,
+    original_rgb: np.ndarray,
+) -> Image.Image:
+    """Refina y purifica la máscara alfa generada por rembg.
 
-    Devuelve una imagen en formato RGBA con fondo transparente.
+    - Detecta fondos sólidos o blancos en los vértices del lienzo y aplica floodFill
+      multisemilla para eliminar al 100% el fondo exterior continuo.
+    - Aplica un umbral estricto para descartar bordes translúcidos residuales que VTracer
+      convertiría en polígonos blancos.
+    - Aplica erosión morfológica de 1px (defringing) para eliminar halos blancos en los bordes.
+    - Suprime y limpia los valores RGB en áreas transparentes para evitar fugas de color.
+    """
+    arr = np.array(rgba_image)
+    if arr.shape[2] != 4:
+        return rgba_image
+
+    rgb = arr[:, :, :3]
+    alpha = arr[:, :, 3].copy()
+    h, w = arr.shape[:2]
+
+    # 1. Detección de fondo claro o blanco en las 4 esquinas de la imagen original
+    corners = [
+        original_rgb[0, 0],
+        original_rgb[0, w - 1],
+        original_rgb[h - 1, 0],
+        original_rgb[h - 1, w - 1],
+    ]
+    mean_corner = np.mean(corners, axis=0)
+    is_white_bg = (
+        np.all(mean_corner > 215)
+        and max([np.linalg.norm(c - mean_corner) for c in corners]) < 40
+    )
+
+    if is_white_bg:
+        # floodFill desde los 4 vértices para capturar todo el fondo exterior sin tocar el contenido interior
+        mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        flood_img = np.copy(original_rgb)
+        diff = (30, 30, 30)
+        for pt in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+            cv2.floodFill(
+                flood_img,
+                mask,
+                pt,
+                (0, 0, 0),
+                diff,
+                diff,
+                flags=4 | cv2.FLOODFILL_MASK_ONLY | (255 << 8),
+            )
+
+        flood_bg = mask[1 : h + 1, 1 : w + 1] == 255
+        alpha[flood_bg] = 0
+
+    # 2. Umbralización estricta: cualquier opacidad suave residual (<160) se descarta
+    alpha = np.where(alpha >= 160, alpha, 0).astype(np.uint8)
+
+    # 3. Defringing morfológico: erosión de 1px para erradicar el halo blanco exterior
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    alpha = cv2.erode(alpha, kernel, iterations=1)
+
+    # 4. Eliminación de píxeles periféricos casi blancos pegados a la zona transparente
+    white_pixels = (
+        (rgb[:, :, 0] > 220) & (rgb[:, :, 1] > 220) & (rgb[:, :, 2] > 220)
+    )
+    transparent_area = (alpha == 0).astype(np.uint8)
+    near_transparent = cv2.dilate(transparent_area, kernel, iterations=2).astype(bool)
+    alpha[white_pixels & near_transparent] = 0
+
+    # 5. Forzar negro puro en zonas transparentes para que VTracer no dibuje ningún residuo
+    clean_rgb = np.copy(rgb)
+    clean_rgb[alpha == 0] = [0, 0, 0]
+
+    return Image.fromarray(np.dstack([clean_rgb, alpha]))
+
+
+def step_a_remove_background(image: Image.Image) -> Image.Image:
+    """Paso A: Elimina el fondo de la imagen utilizando rembg (IA) con purificación de bordes.
+
+    - Aplica rembg con post-procesamiento de máscara.
+    - Purifica la máscara alfa eliminando halos blancos y residuos periféricos.
+    Devuelve una imagen en formato RGBA con fondo 100% transparente.
     """
     logger.info("Paso A: Ejecutando remoción de fondo con rembg...")
     session = get_rembg_session()
-    result = remove(image, session=session)
-    return result.convert("RGBA")
+
+    original_rgb = np.array(image.convert("RGB"))
+    result = remove(
+        image,
+        session=session,
+        post_process_mask=True,
+    )
+    result_rgba = result.convert("RGBA")
+
+    # Purificar la máscara alfa eliminando halos blancos y residuos
+    refined_rgba = clean_and_refine_alpha_matte(result_rgba, original_rgb)
+    return refined_rgba
 
 
 def step_b_quantize_kmeans(image: Image.Image, color_count: int) -> Image.Image:
@@ -234,6 +321,7 @@ def step_b_quantize_kmeans(image: Image.Image, color_count: int) -> Image.Image:
     if has_alpha and alpha is not None:
         out_rgb = np.copy(rgb)
         out_rgb[mask] = quantized_pixels
+        out_rgb[alpha == 0] = [0, 0, 0]
         final_arr = np.dstack([out_rgb, alpha])
     else:
         final_arr = quantized_pixels.reshape(rgb.shape)
@@ -263,6 +351,8 @@ def apply_mean_shift_smoothing(image: Image.Image) -> Image.Image:
     filtered_rgb = cv2.pyrMeanShiftFiltering(rgb_for_filter, sp=15, sr=40)
 
     if has_alpha and alpha is not None:
+        # Prevenir contaminación de color en píxeles transparentes
+        filtered_rgb[alpha == 0] = [0, 0, 0]
         processed = np.dstack([filtered_rgb, alpha])
     else:
         processed = filtered_rgb
