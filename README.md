@@ -157,9 +157,11 @@ Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend
    - Una vez recibido el vector, el canvas activa el comparador interactivo `react-compare-slider`.
    - Arrastra la barra vertical divisoria para comparar en tiempo real el mapa de bits original con el vector SVG sobre una cuadrícula de transparencia.
 
-4. **Controles Flotantes de Zoom y Descarga:**
-   - Utiliza los botones flotantes del canvas para acercar (`+`), alejar (`-`) o reiniciar el zoom (`100%`).
-   - Pulsa **"Descargar SVG"** para descargar el archivo `.svg` directamente a tu equipo.
+4. **Navegación Interactiva, Zoom y Paneo en el Canvas:**
+   - **Zoom con scroll del ratón:** Gira la rueda del ratón (`wheel`) sobre el canvas para acercar o alejar suavemente enfocado en la posición del puntero. Sin el tope previo del 300% (rango dinámico de 20% hasta 3000%), ideal para inspeccionar curvas Bézier y detalles a nivel subpíxel.
+   - **Arrastre de la imagen (Pan):** Haz clic y arrastra con el ratón en cualquier parte del lienzo, usa el botón central (clic de rueda) o mantén presionada la **barra espaciadora** para desplazarte con fluidez sin interferir con el divisor deslizante.
+   - **Restablecer vista:** Haz doble clic en el lienzo o presiona el botón de reinicio en la barra flotante para centrar la imagen al 100%.
+   - **Descarga vectorial:** Pulsa **"Descargar SVG"** para obtener el archivo listo para producción.
 
 5. **Reinicio y Nuevas Pruebas:**
    - Pulsa **"Nueva Imagen"** en la barra superior para reiniciar los estados y procesar un nuevo archivo.

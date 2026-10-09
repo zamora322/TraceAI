@@ -21,6 +21,8 @@ import {
   Sliders,
   Layers,
   ChevronDown,
+  Move,
+  Hand,
 } from "lucide-react";
 import { ReactCompareSlider, ReactCompareSliderHandle } from "react-compare-slider";
 
@@ -45,12 +47,138 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [zoom, setZoom] = useState<number>(100);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
   const [isMounted, setIsMounted] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef<number>(zoom);
+  const panRef = useRef<{ x: number; y: number }>(pan);
+  const isPanningRef = useRef<boolean>(false);
+  const panStartRef = useRef<{
+    startX: number;
+    startY: number;
+    initialPanX: number;
+    initialPanY: number;
+  }>({
+    startX: 0,
+    startY: 0,
+    initialPanX: 0,
+    initialPanY: 0,
+  });
 
   useEffect(() => {
     setIsMounted(true);
+  }, []);
+
+  // Sincronización de refs para los event listeners nativos
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  // Listener nativo no-pasivo para Zoom con scroll del ratón (Wheel)
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!file) return;
+
+      e.preventDefault();
+
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - (rect.left + rect.width / 2);
+      const mouseY = e.clientY - (rect.top + rect.height / 2);
+
+      const zoomDelta = -e.deltaY;
+      const factor = Math.exp(zoomDelta * 0.0018);
+      const currentZoom = zoomRef.current;
+
+      // Rango dinámico sin tope de 300% (hasta 3000% y mínimo 20%)
+      let newZoom = Math.round(currentZoom * factor);
+      if (newZoom < 20) newZoom = 20;
+      if (newZoom > 3000) newZoom = 3000;
+
+      if (newZoom !== currentZoom) {
+        const scaleChange = newZoom / currentZoom;
+        const currentPan = panRef.current;
+
+        // Proyección hacia la posición del cursor
+        const newPanX = mouseX - (mouseX - currentPan.x) * scaleChange;
+        const newPanY = mouseY - (mouseY - currentPan.y) * scaleChange;
+
+        zoomRef.current = newZoom;
+        panRef.current = { x: newPanX, y: newPanY };
+        setZoom(newZoom);
+        setPan({ x: newPanX, y: newPanY });
+      }
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener("wheel", handleWheel);
+    };
+  }, [file]);
+
+  // Eventos globales de arrastre con ratón (MouseMove y MouseUp)
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isPanningRef.current) return;
+      const dx = e.clientX - panStartRef.current.startX;
+      const dy = e.clientY - panStartRef.current.startY;
+      const nextPan = {
+        x: panStartRef.current.initialPanX + dx,
+        y: panStartRef.current.initialPanY + dy,
+      };
+      panRef.current = nextPan;
+      setPan(nextPan);
+    };
+
+    const handleMouseUp = () => {
+      if (isPanningRef.current) {
+        isPanningRef.current = false;
+        setIsPanning(false);
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
+  // Soporte para modo mano al mantener la barra espaciadora
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.code === "Space" &&
+        !e.repeat &&
+        (e.target === document.body || e.target === canvasContainerRef.current)
+      ) {
+        setIsSpacePressed(true);
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        setIsSpacePressed(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
   }, []);
 
   // Limpieza de Object URLs para evitar fugas de memoria
@@ -94,6 +222,7 @@ export default function Home() {
     setFileSize(formatBytes(selectedFile.size));
     setVectorUrl(null);
     setZoom(100);
+    setPan({ x: 0, y: 0 });
 
     const originalUrl = URL.createObjectURL(selectedFile);
     setPreviewUrl(originalUrl);
@@ -173,7 +302,50 @@ export default function Home() {
     setVectorUrl(null);
     setError(null);
     setZoom(100);
+    setPan({ x: 0, y: 0 });
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!file) return;
+
+    const target = e.target as HTMLElement;
+    // No iniciar arrastre si se interactúa con controles o el tirador del slider
+    if (
+      target.closest('[data-rcs="handle"]') ||
+      target.closest("button") ||
+      target.closest("select") ||
+      target.closest("input")
+    ) {
+      return;
+    }
+
+    // Permitir arrastre con botón primario (0) o central (1)
+    if (e.button === 0 || e.button === 1) {
+      e.preventDefault();
+      setIsPanning(true);
+      isPanningRef.current = true;
+      panStartRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        initialPanX: pan.x,
+        initialPanY: pan.y,
+      };
+    }
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!file) return;
+    const target = e.target as HTMLElement;
+    if (
+      target.closest('[data-rcs="handle"]') ||
+      target.closest("button") ||
+      target.closest("select")
+    ) {
+      return;
+    }
+    setZoom(100);
+    setPan({ x: 0, y: 0 });
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -399,13 +571,24 @@ export default function Home() {
         {/* CANVAS PRINCIPAL: Área de Visualización y Comparativa   */}
         {/* ======================================================== */}
         <main
-          className="flex-1 relative flex items-center justify-center overflow-hidden p-6 select-none"
+          ref={canvasContainerRef}
+          className={`flex-1 relative flex items-center justify-center overflow-hidden p-6 select-none ${
+            file
+              ? isPanning
+                ? "cursor-grabbing"
+                : isSpacePressed
+                ? "cursor-grab"
+                : "cursor-grab"
+              : "cursor-default"
+          }`}
           style={{
             backgroundColor: "#070A12",
             backgroundImage:
               "radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px)",
             backgroundSize: "24px 24px",
           }}
+          onMouseDown={handleMouseDown}
+          onDoubleClick={handleDoubleClick}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -489,20 +672,26 @@ export default function Home() {
           {file && !vectorUrl && (
             <div className="w-full h-full flex flex-col items-center justify-center relative z-10 animate-in fade-in duration-300">
               <div
-                className="max-w-2xl max-h-[75vh] p-4 rounded-2xl border border-white/10 bg-[#0B0F19]/80 backdrop-blur-xl shadow-2xl flex items-center justify-center overflow-hidden transition-transform duration-200"
-                style={{ transform: `scale(${zoom / 100})` }}
+                className="max-w-2xl max-h-[75vh] p-4 rounded-2xl border border-white/10 bg-[#0B0F19]/80 backdrop-blur-xl shadow-2xl flex items-center justify-center overflow-hidden"
+                style={{
+                  transform: `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${zoom / 100})`,
+                  transition: isPanning ? "none" : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
+                  transformOrigin: "center center",
+                  willChange: isPanning ? "transform" : "auto",
+                }}
               >
                 {previewUrl && (
                   <img
                     src={previewUrl}
                     alt="Previsualización original"
-                    className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-md"
+                    draggable={false}
+                    className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-md select-none pointer-events-none"
                   />
                 )}
               </div>
 
               {!isLoading && (
-                <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 backdrop-blur-md">
+                <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 backdrop-blur-md pointer-events-none">
                   <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
                   <span>Ajusta las opciones a la izquierda y presiona <strong>Vectorizar</strong></span>
                 </div>
@@ -513,21 +702,27 @@ export default function Home() {
           {/* Estado 3: VECTORIZADO (Comparador Visual react-compare-slider) */}
           {file && vectorUrl && isMounted && (
             <div
-              className="w-full h-full max-w-4xl max-h-[80vh] flex items-center justify-center relative z-10 transition-transform duration-200"
-              style={{ transform: `scale(${zoom / 100})` }}
+              className="w-full h-full max-w-4xl max-h-[80vh] flex items-center justify-center relative z-10"
+              style={{
+                transform: `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${zoom / 100})`,
+                transition: isPanning ? "none" : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
+                transformOrigin: "center center",
+                willChange: isPanning ? "transform" : "auto",
+              }}
             >
               <div className="w-full h-full rounded-2xl overflow-hidden border border-indigo-500/30 bg-[#0B0F19] shadow-2xl shadow-indigo-950/50 flex flex-col">
                 <ReactCompareSlider
                   itemOne={
                     <div className="w-full h-full flex items-center justify-center bg-black/40 p-4 select-none relative">
-                      <div className="absolute top-3 left-3 z-10 px-2.5 py-1 rounded-md bg-black/70 border border-white/10 text-[11px] font-medium text-slate-300 backdrop-blur-md">
+                      <div className="absolute top-3 left-3 z-10 px-2.5 py-1 rounded-md bg-black/70 border border-white/10 text-[11px] font-medium text-slate-300 backdrop-blur-md pointer-events-none">
                         Original (Ráster)
                       </div>
                       {previewUrl && (
                         <img
                           src={previewUrl}
                           alt="Imagen original"
-                          className="max-h-[68vh] max-w-full object-contain pointer-events-none"
+                          draggable={false}
+                          className="max-h-[68vh] max-w-full object-contain pointer-events-none select-none"
                         />
                       )}
                     </div>
@@ -542,13 +737,14 @@ export default function Home() {
                         backgroundSize: "16px 16px",
                       }}
                     >
-                      <div className="absolute top-3 right-3 z-10 px-2.5 py-1 rounded-md bg-indigo-500/20 border border-indigo-500/40 text-[11px] font-semibold text-cyan-300 backdrop-blur-md">
+                      <div className="absolute top-3 right-3 z-10 px-2.5 py-1 rounded-md bg-indigo-500/20 border border-indigo-500/40 text-[11px] font-semibold text-cyan-300 backdrop-blur-md pointer-events-none">
                         Vectorizado (SVG)
                       </div>
                       <img
                         src={vectorUrl}
                         alt="SVG Vectorizado"
-                        className="max-h-[68vh] max-w-full object-contain pointer-events-none filter drop-shadow-md"
+                        draggable={false}
+                        className="max-h-[68vh] max-w-full object-contain pointer-events-none filter drop-shadow-md select-none"
                       />
                     </div>
                   }
@@ -561,6 +757,7 @@ export default function Home() {
                         boxShadow: "0 0 15px rgba(99, 102, 241, 0.6)",
                         width: "36px",
                         height: "36px",
+                        cursor: "ew-resize",
                       }}
                       linesStyle={{
                         backgroundColor: "#6366f1",
@@ -597,30 +794,39 @@ export default function Home() {
             </div>
           )}
 
-          {/* Barra de Herramientas Flotante sobre el Canvas (Zoom & Download) */}
+          {/* Barra de Herramientas Flotante sobre el Canvas (Zoom & Pan & Download) */}
           {file && (
             <div className="absolute bottom-6 right-6 z-30 flex items-center gap-2 bg-[#0B0F19]/90 border border-white/10 rounded-2xl p-1.5 backdrop-blur-xl shadow-2xl">
+              {/* Indicador de ayuda */}
+              <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 text-[11px] text-slate-400 font-medium border-r border-white/10 select-none">
+                <Move className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Scroll: Zoom • Arrastrar: Mover</span>
+              </div>
+
               <div className="flex items-center gap-1 border-r border-white/10 pr-2">
                 <button
-                  onClick={() => setZoom((z) => Math.max(50, z - 25))}
+                  onClick={() => setZoom((z) => Math.max(20, Math.round(z / 1.25)))}
                   title="Alejar (Zoom Out)"
                   className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
                 >
                   <ZoomOut className="w-4 h-4" />
                 </button>
-                <span className="text-[11px] font-mono text-slate-300 w-11 text-center">
+                <span className="text-[11px] font-mono text-slate-300 min-w-12 text-center select-none font-semibold">
                   {zoom}%
                 </span>
                 <button
-                  onClick={() => setZoom((z) => Math.min(300, z + 25))}
-                  title="Acercar (Zoom In)"
+                  onClick={() => setZoom((z) => Math.min(3000, Math.round(z * 1.25)))}
+                  title="Acercar (Zoom In - sin tope)"
                   className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
                 >
                   <ZoomIn className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={() => setZoom(100)}
-                  title="Restablecer Zoom (100%)"
+                  onClick={() => {
+                    setZoom(100);
+                    setPan({ x: 0, y: 0 });
+                  }}
+                  title="Restablecer Vista (100% y centrado - o doble clic)"
                   className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
