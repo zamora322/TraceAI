@@ -133,11 +133,12 @@ Asegúrate de tener instalados los siguientes componentes en tu entorno:
 
 ---
 
-## 🔌 Endpoints de la API Inicial
+## 🔌 Endpoints de la API
 
-| Método | Endpoint | Descripción | Respuesta Ejemplo |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/` | Verificación de estado del servicio (Health Check) | `{"status": "TraceAI Backend API Online"}` |
+| Método | Endpoint | Parámetros / Payload | Descripción | Respuesta Ejemplo |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/` | Ninguno | Verificación de estado del servicio (Health Check). | `{"status": "TraceAI Backend API Online"}` |
+| `POST` | `/api/vectorize` | `multipart/form-data`<br>`file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB) | Vectoriza una imagen de mapa de bits a curvas Bézier SVG mediante IA/algoritmos de alta precisión con limpieza segura de temporales. | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
 
 ---
 
