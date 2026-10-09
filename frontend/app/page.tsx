@@ -49,7 +49,7 @@ export default function Home() {
 
   // Parámetros de Vectorización
   const [removeBackground, setRemoveBackground] = useState<boolean>(false);
-  const [colorCount, setColorCount] = useState<number>(0);
+  const [colorCount, setColorCount] = useState<number>(4);
   const [detailLevel, setDetailLevel] = useState<DetailLevel>("medium");
   const [superResolution, setSuperResolution] = useState<boolean>(false);
   const [isLowRes, setIsLowRes] = useState<boolean>(false);
@@ -58,6 +58,7 @@ export default function Home() {
   const [customPalette, setCustomPalette] = useState<string[]>([]);
   const [originalPalette, setOriginalPalette] = useState<string[]>([]);
   const [isExtractingPalette, setIsExtractingPalette] = useState<boolean>(false);
+  const [paletteRefreshKey, setPaletteRefreshKey] = useState<number>(0);
   const [selectedColorIndices, setSelectedColorIndices] = useState<number[]>([]);
 
   // Estados de UI y Canvas
@@ -272,7 +273,7 @@ export default function Home() {
     return () => {
       isCancelled = true;
     };
-  }, [file, colorCount, removeBackground]);
+  }, [file, colorCount, removeBackground, paletteRefreshKey]);
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 Bytes";
@@ -313,6 +314,10 @@ export default function Home() {
 
     const originalUrl = URL.createObjectURL(selectedFile);
     setPreviewUrl(originalUrl);
+
+    if (colorCount === 0) {
+      setColorCount(4);
+    }
 
     // Detección de resolución e inspección para sugerir Super-Resolución 4x
     const imgTest = new window.Image();
@@ -757,79 +762,163 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Control 2: Paleta de Colores y Editor Interactivo */}
-            <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-colors hover:border-white/10 space-y-3">
+            {/* Control 2: Paleta de Colores & Editor Interactivo (PRO) */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 space-y-3.5 transition-colors hover:border-white/15">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                  <Palette className="w-4 h-4 text-purple-400" />
-                  <span>Paleta de Colores</span>
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                    <Palette className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-slate-200">
+                        Editor de Paleta
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold">
+                        PRO
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      K-Means, edición Hex y fusión
+                    </p>
+                  </div>
                 </div>
+
                 {colorCount > 0 && customPalette.length > 0 && (
                   <button
                     onClick={handleResetPalette}
                     title="Restablecer a colores detectados inicialmente"
-                    className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
+                    className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition-colors px-2 py-1 rounded bg-white/5 border border-white/10"
                   >
                     <RotateCcw className="w-2.5 h-2.5" />
                     <span>Restablecer</span>
                   </button>
                 )}
               </div>
-              <p className="text-[11px] text-slate-400 leading-normal">
-                Cuantiza con K-Means para aislar plastas sólidas de color.
-              </p>
 
-              <div className="relative">
-                <select
-                  value={colorCount}
-                  onChange={(e) => setColorCount(Number(e.target.value))}
-                  className="w-full bg-[#0d1222] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 appearance-none cursor-pointer"
-                >
-                  <option value={0}>Automático (Sin forzar paleta)</option>
-                  <option value={2}>2 Colores (Bicolor / Silueta)</option>
-                  <option value={4}>4 Colores (Logo minimalista)</option>
-                  <option value={8}>8 Colores (Paleta intermedia)</option>
-                  <option value={16}>16 Colores (Detalle rico)</option>
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5 pointer-events-none" />
+              {/* Selector Segmentado de Colores */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] text-slate-300 font-medium flex items-center justify-between">
+                  <span>Cantidad de Colores:</span>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {colorCount === 0 ? "Automático" : `${colorCount} colores`}
+                  </span>
+                </label>
+                <div className="grid grid-cols-5 gap-1 bg-[#0d1222] p-1 rounded-xl border border-white/10">
+                  {[
+                    { count: 0, label: "Auto" },
+                    { count: 2, label: "2" },
+                    { count: 4, label: "4" },
+                    { count: 8, label: "8" },
+                    { count: 16, label: "16" },
+                  ].map((item) => {
+                    const isSelected = colorCount === item.count;
+                    return (
+                      <button
+                        key={item.count}
+                        type="button"
+                        onClick={() => setColorCount(item.count)}
+                        className={`py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                          isSelected
+                            ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                            : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* EDITOR INTERACTIVO DE PALETA (K-Means + Edición Hex + Fusión) */}
-              {colorCount > 0 && file && (
-                <div className="pt-2 border-t border-white/5 space-y-3 animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
-                      <Pipette className="w-3 h-3 text-cyan-400" />
-                      <span>Colores Detectados ({customPalette.length}):</span>
-                    </span>
-                    {isExtractingPalette && (
-                      <span className="text-[10px] text-cyan-400 flex items-center gap-1">
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>Analizando...</span>
+              {/* ESTADO 1: No hay imagen subida */}
+              {!file && (
+                <div className="p-3 rounded-xl bg-black/20 border border-dashed border-white/10 text-center text-[11px] text-slate-400">
+                  Sube una imagen para ver y editar su paleta de colores.
+                </div>
+              )}
+
+              {/* ESTADO 2: Hay imagen y está en Auto */}
+              {file && colorCount === 0 && (
+                <div className="p-3 rounded-xl bg-black/20 border border-white/5 space-y-2">
+                  <p className="text-[11px] text-slate-400 leading-normal">
+                    Modo automático activo. Para editar tonos y fusionar colores tipo Vector Magic:
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setColorCount(4)}
+                    className="w-full py-2 px-3 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-purple-300" />
+                    <span>Activar 4 Colores (Recomendado)</span>
+                  </button>
+                </div>
+              )}
+
+              {/* ESTADO 3: Hay imagen y colorCount > 0 -> EDITOR ACTIVO */}
+              {file && colorCount > 0 && (
+                <div className="space-y-2.5 pt-1">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                      <Pipette className="w-3.5 h-3.5 text-purple-400" />
+                      <span>
+                        {isExtractingPalette
+                          ? "Analizando colores con IA..."
+                          : `Colores Detectados (${customPalette.length}):`}
                       </span>
+                    </span>
+                    {isExtractingPalette ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setPaletteRefreshKey((k) => k + 1)}
+                        title="Re-analizar paleta con IA"
+                        className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition-colors px-2 py-0.5 rounded bg-white/5 border border-white/10"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5" />
+                        <span>Re-analizar</span>
+                      </button>
                     )}
                   </div>
 
-                  {customPalette.length > 0 && (
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-4 gap-2 bg-[#080C16] p-2.5 rounded-xl border border-white/5">
+                  {/* Skeletons animados durante la carga */}
+                  {isExtractingPalette && (
+                    <div className="grid grid-cols-4 gap-2 bg-[#080C16] p-2.5 rounded-xl border border-white/5 animate-pulse">
+                      {Array.from({ length: Math.min(colorCount, 8) }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="flex flex-col items-center gap-1.5 p-2 rounded-lg border border-white/5"
+                        >
+                          <div className="w-8 h-8 rounded-full bg-white/10" />
+                          <div className="w-10 h-2 bg-white/10 rounded" />
+                          <div className="w-8 h-3 bg-white/5 rounded" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Círculos de color interactivos */}
+                  {!isExtractingPalette && customPalette.length > 0 && (
+                    <div className="space-y-2.5">
+                      <div className="grid grid-cols-4 gap-2 bg-[#080C16] p-2.5 rounded-xl border border-white/5 max-h-56 overflow-y-auto">
                         {customPalette.map((colorHex, idx) => {
                           const isSelected = selectedColorIndices.includes(idx);
                           return (
                             <div
                               key={`${idx}-${colorHex}`}
-                              className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border transition-all ${
+                              className={`flex flex-col items-center gap-1.5 p-2 rounded-xl border transition-all ${
                                 isSelected
-                                  ? "border-cyan-400 bg-cyan-500/10 shadow-sm shadow-cyan-500/20"
+                                  ? "border-cyan-400 bg-cyan-500/15 shadow-md shadow-cyan-500/20"
                                   : "border-white/5 bg-white/[0.02] hover:border-white/20"
                               }`}
                             >
                               <div className="relative group">
                                 <label
                                   htmlFor={`color-input-${idx}`}
-                                  className="block w-7 h-7 rounded-full cursor-pointer shadow-inner border border-white/20 transition-transform group-hover:scale-105"
+                                  className="block w-8 h-8 rounded-full cursor-pointer shadow-md border-2 border-white/25 transition-transform group-hover:scale-110"
                                   style={{ backgroundColor: colorHex }}
-                                  title={`Editar ${colorHex} (Clic para cambiar)`}
+                                  title={`Editar ${colorHex} (Clic para abrir selector)`}
                                 />
                                 <input
                                   id={`color-input-${idx}`}
@@ -842,7 +931,7 @@ export default function Home() {
                                 />
                               </div>
 
-                              <span className="text-[9px] font-mono text-slate-300 font-semibold tracking-tighter truncate max-w-[50px]">
+                              <span className="text-[10px] font-mono text-slate-200 font-bold tracking-tight truncate max-w-[55px]">
                                 {colorHex}
                               </span>
 
@@ -851,42 +940,45 @@ export default function Home() {
                                 onClick={() => toggleSelectColor(idx)}
                                 title={
                                   isSelected
-                                    ? "Deseleccionar para fusión"
+                                    ? "Deseleccionar de fusión"
                                     : "Seleccionar para fusionar con otro color"
                                 }
-                                className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
+                                className={`text-[9px] px-2 py-0.5 rounded-md font-medium transition-all ${
                                   isSelected
-                                    ? "bg-cyan-500 text-black font-bold"
-                                    : "bg-white/5 hover:bg-white/10 text-slate-400"
+                                    ? "bg-cyan-400 text-black font-bold shadow-sm"
+                                    : "bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white"
                                 }`}
                               >
-                                {isSelected ? "Sel" : "Unir"}
+                                {isSelected ? "Elegido" : "Unir"}
                               </button>
                             </div>
                           );
                         })}
                       </div>
 
-                      {/* Botón de Fusión de Colores */}
+                      {/* Botón de Fusión cuando hay 2 seleccionados */}
                       {selectedColorIndices.length === 2 && (
                         <button
                           type="button"
                           onClick={handleMergeColors}
-                          className="w-full py-2 rounded-lg bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-md shadow-purple-500/20 transition-all animate-in fade-in"
+                          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-500 via-indigo-600 to-cyan-500 hover:from-purple-600 hover:to-cyan-600 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-500/25 transition-all animate-in fade-in"
                         >
                           <Combine className="w-3.5 h-3.5" />
                           <span>
-                            Fusionar{" "}
-                            {customPalette[selectedColorIndices[0]]} +{" "}
+                            Fusionar {customPalette[selectedColorIndices[0]]} +{" "}
                             {customPalette[selectedColorIndices[1]]}
                           </span>
                         </button>
                       )}
 
-                      <p className="text-[10px] text-slate-400 leading-tight">
-                        • Haz clic en el círculo para cambiar el tono Hex.
-                        <br />• Selecciona 2 colores para fusionarlos en uno solo.
-                      </p>
+                      <div className="p-2 rounded-lg bg-white/[0.02] border border-white/5 text-[10px] text-slate-400 space-y-0.5 leading-tight">
+                        <p>
+                          💡 <strong>Clic en el círculo:</strong> Abre el selector para cambiar el tono.
+                        </p>
+                        <p>
+                          🔗 <strong>Botón 'Unir':</strong> Selecciona 2 colores para fusionarlos en uno solo.
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
