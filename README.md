@@ -41,7 +41,7 @@ graph TD
 | Capa | Tecnologías | Propósito |
 | :--- | :--- | :--- |
 | **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [rembg](https://github.com/danielgatis/rembg), [scikit-learn](https://scikit-learn.org/), [OpenCV](https://opencv.org/), [Pillow](https://python-pillow.org/), [vtracer](https://github.com/visioncortex/vtracer) | Pipeline de IA profesional: eliminación de fondos, cuantización K-Means, filtrado de contornos y vectorización adaptativa. |
-| **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/), [Lucide React](https://lucide.dev/) | Interfaz SaaS reactiva, zona interactiva de drag & drop, comparativa visual Antes/Después en tiempo real y descarga de SVG. |
+| **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/), [Lucide React](https://lucide.dev/), [react-compare-slider](https://github.com/nerdyman/react-compare-slider) | Layout tipo Studio con barra de herramientas de IA, Drag & Drop interactivo, comparador visual deslizante en tiempo real, controles de zoom y exportación SVG. |
 
 ---
 
@@ -143,24 +143,26 @@ Asegúrate de tener instalados los siguientes componentes en tu entorno:
 
 Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend en `http://localhost:3000`), puedes validar el funcionamiento de extremo a extremo:
 
-1. **Subida Interactiva (Drag & Drop o Explorador):**
-   - Arrastra una imagen (`.png`, `.jpg` o `.jpeg`) sobre la zona central con bordes punteados. Observa cómo el recuadro reacciona visualmente con iluminación cian y escala suave.
-   - O haz clic sobre el área para seleccionar la imagen mediante el explorador de archivos.
+1. **Subida Interactiva en el Canvas (Drag & Drop o Explorador):**
+   - Arrastra una imagen (`.png`, `.jpg`, `.jpeg`, `.webp` o `.bmp`) sobre el canvas central. Observa la animación con iluminación cian y elevación.
+   - O haz clic sobre el área para seleccionar la imagen desde tu explorador de archivos.
 
-2. **Indicador de Procesamiento con IA:**
-   - Observa la transición al estado de carga animado con el mensaje *"Procesando imagen con IA..."* y el flujo de etapas (*Preprocesamiento OpenCV → Vectorización VTracer*).
+2. **Configuración de Parámetros de IA en el Sidebar:**
+   - **Eliminar Fondo (IA):** Activa el switch para aislar el sujeto mediante `rembg`.
+   - **Paleta de Colores:** Selecciona una cantidad fija con K-Means (*Automático, 2, 4, 8 o 16 colores*) ideal para serigrafía o logotipos.
+   - **Nivel de Detalle:** Elige entre *Bajo (polígonos planos)*, *Medio (curvas suaves)* o *Alto (fidelidad máxima)*.
+   - Haz clic en **"Vectorizar"** para enviar la petición al backend.
 
-3. **Comparador "Antes y Después":**
-   - Una vez procesado el archivo, la vista se actualiza automáticamente mostrando:
-     - **Antes (Original):** Imagen en mapa de bits con su peso y formato original.
-     - **Después (SVG Vectorial):** Renderizado vectorial en tiempo real sobre una cuadrícula que permite apreciar recortes y transparencias limpias.
+3. **Comparador Visual Deslizante (Antes y Después):**
+   - Una vez recibido el vector, el canvas activa el comparador interactivo `react-compare-slider`.
+   - Arrastra la barra vertical divisoria para comparar en tiempo real el mapa de bits original con el vector SVG sobre una cuadrícula de transparencia.
 
-4. **Descarga del Archivo SVG:**
-   - Haz clic en **"Descargar SVG"** para guardar el archivo `.svg` directamente en tu disco local.
-   - Puedes abrir el SVG descargado en cualquier navegador, editor de código o software como Figma e Illustrator para comprobar la nitidez y escalabilidad infinita de los trazos.
+4. **Controles Flotantes de Zoom y Descarga:**
+   - Utiliza los botones flotantes del canvas para acercar (`+`), alejar (`-`) o reiniciar el zoom (`100%`).
+   - Pulsa **"Descargar SVG"** para descargar el archivo `.svg` directamente a tu equipo.
 
-5. **Reinicio de Estados:**
-   - Pulsa **"Vectorizar otra imagen"** para reiniciar los estados y liberar recursos de memoria (`URL.revokeObjectURL`).
+5. **Reinicio y Nuevas Pruebas:**
+   - Pulsa **"Nueva Imagen"** en la barra superior para reiniciar los estados y procesar un nuevo archivo.
 
 6. **Comprobación de Errores y Seguridad:**
    - Prueba a subir un archivo no soportado (como un archivo de texto o ejecutable) para comprobar que el banner de alerta amigable informa el error de forma clara sin romper la aplicación.

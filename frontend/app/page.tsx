@@ -11,27 +11,49 @@ import {
   Image as ImageIcon,
   FileCode2,
   Loader2,
-  ArrowRight,
-  Layers,
-  Eye,
   SlidersHorizontal,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Palette,
+  Scissors,
+  Wand2,
+  Sliders,
+  Layers,
+  ChevronDown,
 } from "lucide-react";
+import { ReactCompareSlider, ReactCompareSliderHandle } from "react-compare-slider";
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+type DetailLevel = "low" | "medium" | "high";
 
 export default function Home() {
+  // Estados de Imagen
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [vectorUrl, setVectorUrl] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<string>("");
+
+  // Parámetros de Vectorización
+  const [removeBackground, setRemoveBackground] = useState<boolean>(false);
+  const [colorCount, setColorCount] = useState<number>(0);
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>("medium");
+
+  // Estados de UI y Canvas
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [fileSize, setFileSize] = useState<string>("");
+  const [zoom, setZoom] = useState<number>(100);
+  const [isMounted, setIsMounted] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Clean up object URLs on unmount to avoid memory leaks
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  // Limpieza de Object URLs para evitar fugas de memoria
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -47,46 +69,48 @@ export default function Home() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  const processFile = async (selectedFile: File) => {
-    // Validar tipo de archivo
-    const validExtensions = [".png", ".jpg", ".jpeg"];
+  const handleSelectFile = (selectedFile: File) => {
+    const validExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
     const fileName = selectedFile.name.toLowerCase();
     const isValidExt = validExtensions.some((ext) => fileName.endsWith(ext));
 
     if (!isValidExt) {
       setError(
-        "Formato no válido. Por favor selecciona una imagen en formato .png, .jpg o .jpeg."
+        "Formato no compatible. Por favor sube una imagen PNG, JPG, JPEG, WEBP o BMP."
       );
       return;
     }
 
-    // Validar tamaño máximo (15 MB)
-    const MAX_SIZE = 15 * 1024 * 1024;
-    if (selectedFile.size > MAX_SIZE) {
-      setError(
-        "La imagen excede el tamaño máximo permitido de 15 MB."
-      );
+    if (selectedFile.size > 15 * 1024 * 1024) {
+      setError("La imagen excede el límite de 15 MB.");
       return;
     }
 
-    // Limpiar estados previos
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     if (vectorUrl) URL.revokeObjectURL(vectorUrl);
 
     setError(null);
     setFile(selectedFile);
     setFileSize(formatBytes(selectedFile.size));
+    setVectorUrl(null);
+    setZoom(100);
 
-    // Crear URL de previsualización para la imagen original
-    const originalPreview = URL.createObjectURL(selectedFile);
-    setPreviewUrl(originalPreview);
+    const originalUrl = URL.createObjectURL(selectedFile);
+    setPreviewUrl(originalUrl);
+  };
 
-    // Iniciar petición al backend
+  const handleVectorize = async () => {
+    if (!file) return;
+
     setIsLoading(true);
+    setError(null);
 
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
+      formData.append("file", file);
+      formData.append("remove_background", removeBackground ? "true" : "false");
+      formData.append("color_count", colorCount.toString());
+      formData.append("detail_level", detailLevel);
 
       const response = await fetch(`${BACKEND_URL}/api/vectorize`, {
         method: "POST",
@@ -96,26 +120,25 @@ export default function Home() {
       if (!response.ok) {
         let detailMessage = "Error en el servidor al vectorizar la imagen.";
         try {
-          const errorJson = await response.json();
-          if (errorJson?.detail) {
-            detailMessage = errorJson.detail;
-          }
+          const errJson = await response.json();
+          if (errJson?.detail) detailMessage = errJson.detail;
         } catch {
-          // Si no es JSON (ej. 502/503), conservar mensaje predeterminado
+          // Respuesta no JSON
         }
         throw new Error(detailMessage);
       }
 
-      // Convertir respuesta a Blob SVG y crear Object URL
       const svgBlob = await response.blob();
-      const svgObjectUrl = URL.createObjectURL(svgBlob);
-      setVectorUrl(svgObjectUrl);
+      if (vectorUrl) URL.revokeObjectURL(vectorUrl);
+
+      const svgUrl = URL.createObjectURL(svgBlob);
+      setVectorUrl(svgUrl);
     } catch (err: unknown) {
-      console.error("Error durante la vectorización:", err);
+      console.error("Error durante vectorización:", err);
       if (err instanceof Error) {
         if (err.message.includes("fetch") || err.name === "TypeError") {
           setError(
-            "No fue posible conectar con el servidor backend (FastAPI en http://localhost:8000). Asegúrate de que el servidor esté activo."
+            "No fue posible conectar con el servidor backend (FastAPI en http://localhost:8000). Comprueba que esté en ejecución."
           );
         } else {
           setError(err.message);
@@ -126,6 +149,31 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleDownloadSvg = () => {
+    if (!vectorUrl || !file) return;
+    const baseName =
+      file.name.substring(0, file.name.lastIndexOf(".")) || "vectorizado";
+    const downloadName = `${baseName}_traceai.svg`;
+
+    const link = document.createElement("a");
+    link.href = vectorUrl;
+    link.download = downloadName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleReset = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (vectorUrl) URL.revokeObjectURL(vectorUrl);
+    setFile(null);
+    setPreviewUrl(null);
+    setVectorUrl(null);
+    setError(null);
+    setZoom(100);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -144,355 +192,455 @@ export default function Home() {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processFile(e.target.files[0]);
-    }
-  };
-
-  const handleDownloadSvg = () => {
-    if (!vectorUrl || !file) return;
-
-    // Nombre de archivo sanitizado con extensión .svg
-    const baseName = file.name.substring(0, file.name.lastIndexOf(".")) || "vectorizado";
-    const downloadName = `${baseName}.svg`;
-
-    const link = document.createElement("a");
-    link.href = vectorUrl;
-    link.download = downloadName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handleReset = () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    if (vectorUrl) URL.revokeObjectURL(vectorUrl);
-    setFile(null);
-    setPreviewUrl(null);
-    setVectorUrl(null);
-    setError(null);
-    setIsLoading(false);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+      handleSelectFile(e.dataTransfer.files[0]);
     }
   };
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#070A12] text-white flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
-      {/* Luces y gradientes ambientales de fondo */}
-      <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[800px] h-[480px] bg-gradient-to-br from-indigo-600/25 via-purple-600/20 to-cyan-500/10 blur-[140px] rounded-full" />
-      <div className="pointer-events-none absolute top-1/2 -right-40 w-[500px] h-[500px] bg-indigo-900/15 blur-[140px] rounded-full" />
-      <div className="pointer-events-none absolute bottom-0 -left-40 w-[450px] h-[450px] bg-purple-900/15 blur-[130px] rounded-full" />
-
-      {/* Header de navegación */}
-      <header className="relative z-20 border-b border-white/5 backdrop-blur-xl bg-[#070A12]/80 sticky top-0">
-        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-500 via-indigo-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/25 border border-white/10">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-extrabold tracking-tight text-xl text-white">
-              Trace<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">AI</span>
+    <div className="min-h-screen bg-[#070A12] text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+      {/* Barra Superior / Header Studio */}
+      <header className="h-14 border-b border-white/5 bg-[#0A0E1A]/90 backdrop-blur-xl px-5 flex items-center justify-between shrink-0 z-30">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/20 border border-white/10">
+            <Sparkles className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold tracking-tight text-lg text-white">
+              Trace<span className="text-cyan-400">AI</span>
+            </span>
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-indigo-300">
+              Studio
             </span>
           </div>
+        </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-              <Layers className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Mean Shift + VTracer</span>
-            </div>
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              FastAPI Online
-            </span>
+        {file && (
+          <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-lg bg-white/[0.03] border border-white/5 text-xs text-slate-300">
+            <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+            <span className="font-medium truncate max-w-xs">{file.name}</span>
+            <span className="text-slate-500 font-mono">({fileSize})</span>
           </div>
+        )}
+
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            API Online
+          </span>
+
+          {file && (
+            <button
+              onClick={handleReset}
+              className="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-all flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Nueva Imagen</span>
+            </button>
+          )}
         </div>
       </header>
 
-      {/* Contenido Principal */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-12 text-center max-w-5xl mx-auto w-full">
-        {/* Cabecera / Hero */}
-        <div className="mb-10 max-w-2xl">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 text-xs font-medium mb-6 backdrop-blur-sm shadow-sm">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Vectorización inteligente de imágenes a SVG</span>
-          </div>
-
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white via-slate-100 to-slate-400 pb-2">
-            TraceAI
-          </h1>
-
-          <p className="mt-3 text-base sm:text-lg md:text-xl text-slate-300 font-light leading-relaxed">
-            Convierte tus imágenes a SVG con IA en segundos
-          </p>
-        </div>
-
-        {/* Mensaje de Error Amigable */}
-        {error && (
-          <div className="mb-8 w-full max-w-2xl bg-red-500/10 border border-red-500/30 rounded-2xl p-4 sm:p-5 text-left flex items-start gap-3 text-red-200 backdrop-blur-md shadow-lg shadow-red-950/20 animate-in fade-in slide-in-from-top-2 duration-200">
-            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-red-300">Ocurrió un problema</p>
-              <p className="text-xs sm:text-sm text-red-200/90 mt-1 leading-normal">{error}</p>
-            </div>
-            <button
-              onClick={() => setError(null)}
-              className="text-xs text-red-400 hover:text-white underline underline-offset-2 shrink-0 ml-2"
-            >
-              Cerrar
-            </button>
-          </div>
-        )}
-
-        {/* Estado: CARGANDO */}
-        {isLoading && (
-          <div className="w-full max-w-2xl bg-gradient-to-b from-white/[0.04] to-white/[0.01] border border-indigo-500/30 rounded-3xl p-10 sm:p-14 backdrop-blur-2xl shadow-2xl shadow-indigo-950/50 flex flex-col items-center justify-center animate-in fade-in duration-300">
-            <div className="relative mb-6">
-              <div className="w-20 h-20 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin flex items-center justify-center" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Sparkles className="w-8 h-8 text-cyan-400 animate-pulse" />
+      {/* Contenedor Principal en Dos Columnas (Sidebar + Canvas) */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+        {/* ======================================================== */}
+        {/* SIDEBAR IZQUIERDO: Panel de Controles                    */}
+        {/* ======================================================== */}
+        <aside className="w-full lg:w-84 xl:w-92 border-b lg:border-b-0 lg:border-r border-white/5 bg-[#090D18]/95 backdrop-blur-xl flex flex-col justify-between shrink-0 z-20 overflow-y-auto">
+          <div className="p-5 space-y-6">
+            <div className="flex items-center justify-between border-b border-white/5 pb-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                <span>Parámetros de IA</span>
               </div>
+              <span className="text-[11px] text-slate-400 font-mono">Pipeline v0.2</span>
             </div>
 
-            <h3 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              Procesando imagen con IA...
-            </h3>
-            <p className="text-sm text-slate-400 mt-2 max-w-md text-center">
-              Segmentando colores con Mean Shift y generando curvas Bézier de alta precisión.
-            </p>
-
-            <div className="mt-8 flex items-center gap-6 text-xs text-slate-400">
-              <div className="flex items-center gap-1.5 text-indigo-400">
-                <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                <span>Preprocesamiento OpenCV</span>
-              </div>
-              <span className="text-slate-600">→</span>
-              <div className="flex items-center gap-1.5 text-cyan-400">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                <span>Vectorización VTracer</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Estado: RESULTADO (Antes y Después + Descarga) */}
-        {!isLoading && vectorUrl && (
-          <div className="w-full max-w-4xl animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="flex items-center justify-between mb-6 px-2">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-lg font-bold text-white">¡Vectorización Completada!</h3>
-              </div>
-              <span className="text-xs text-slate-400 font-mono">
-                {file?.name} ({fileSize})
-              </span>
-            </div>
-
-            {/* Comparativa: Antes y Después */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Tarjeta: ANTES (Original) */}
-              <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 backdrop-blur-xl flex flex-col justify-between text-left">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-xs font-medium text-slate-300">
-                      <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
-                      Original (Mapa de bits)
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-500 uppercase">
-                      {file?.name.split(".").pop()}
-                    </span>
+            {/* Control 1: Eliminar Fondo con IA */}
+            <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-colors hover:border-white/10">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                    <Scissors className="w-4 h-4" />
                   </div>
-
-                  <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-black/40 border border-white/5 flex items-center justify-center p-3">
-                    {previewUrl && (
-                      <img
-                        src={previewUrl}
-                        alt="Imagen original"
-                        className="max-h-full max-w-full object-contain rounded-lg"
-                      />
-                    )}
+                  <div>
+                    <label
+                      htmlFor="remove-bg-toggle"
+                      className="text-xs font-semibold text-slate-200 cursor-pointer"
+                    >
+                      Eliminar Fondo (IA)
+                    </label>
+                    <p className="text-[11px] text-slate-400">Aísla el sujeto con rembg</p>
                   </div>
                 </div>
 
-                <div className="mt-3 text-xs text-slate-400 flex justify-between items-center px-1">
-                  <span>Píxeles rasterizados</span>
-                  <span className="font-mono">{fileSize}</span>
-                </div>
-              </div>
-
-              {/* Tarjeta: DESPUÉS (SVG Vectorizado) */}
-              <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-b from-indigo-500/[0.05] to-transparent p-5 backdrop-blur-xl flex flex-col justify-between text-left shadow-xl shadow-indigo-950/30">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-500/20 border border-indigo-500/30 text-xs font-medium text-indigo-300">
-                      <FileCode2 className="w-3.5 h-3.5 text-cyan-400" />
-                      Resultado (Vector SVG)
-                    </span>
-                    <span className="text-[11px] font-mono text-cyan-400 font-bold">
-                      SVG Escalable
-                    </span>
-                  </div>
-
-                  {/* Visualizador con fondo de tablero para visualizar transparencias */}
-                  <div
-                    className="relative aspect-square w-full rounded-xl overflow-hidden border border-indigo-500/20 flex items-center justify-center p-3"
-                    style={{
-                      backgroundColor: "#0d1117",
-                      backgroundImage:
-                        "radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px)",
-                      backgroundSize: "16px 16px",
-                    }}
-                  >
-                    <img
-                      src={vectorUrl}
-                      alt="Vector SVG generado"
-                      className="max-h-full max-w-full object-contain filter drop-shadow-md"
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-3 text-xs text-indigo-300 flex justify-between items-center px-1 font-medium">
-                  <span>Curvas Bézier exactas</span>
-                  <span className="text-cyan-400">Sin pérdida de calidad</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Barra de Acciones */}
-            <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
-              <button
-                onClick={handleDownloadSvg}
-                className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-cyan-500 hover:from-indigo-600 hover:to-cyan-600 text-white font-semibold text-sm flex items-center justify-center gap-2.5 shadow-lg shadow-indigo-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
-              >
-                <Download className="w-4 h-4 text-white" />
-                <span>Descargar SVG</span>
-              </button>
-
-              <button
-                onClick={handleReset}
-                className="w-full sm:w-auto px-6 py-3.5 rounded-xl border border-white/10 hover:border-white/20 bg-white/[0.03] hover:bg-white/[0.08] text-slate-300 hover:text-white font-medium text-sm flex items-center justify-center gap-2 transition-all"
-              >
-                <RefreshCw className="w-4 h-4 text-slate-400" />
-                <span>Vectorizar otra imagen</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Estado: ÁREA DE DRAG & DROP (Cuando no hay resultado ni carga activa) */}
-        {!isLoading && !vectorUrl && (
-          <div className="w-full max-w-xl">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileInputChange}
-              accept=".png,.jpg,.jpeg,image/png,image/jpeg"
-              className="hidden"
-            />
-
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`group relative rounded-3xl border-2 border-dashed transition-all duration-300 p-10 sm:p-14 cursor-pointer text-center select-none backdrop-blur-2xl ${
-                isDragging
-                  ? "border-cyan-400 bg-indigo-500/15 scale-[1.02] shadow-2xl shadow-cyan-500/20"
-                  : "border-indigo-500/30 bg-gradient-to-b from-white/[0.04] to-white/[0.01] hover:border-indigo-400/60 hover:bg-white/[0.06] shadow-2xl shadow-indigo-950/40"
-              }`}
-            >
-              <div className="flex flex-col items-center justify-center gap-5">
-                <div
-                  className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-300 shadow-inner ${
-                    isDragging
-                      ? "bg-cyan-500/20 text-cyan-300 scale-110"
-                      : "bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 group-hover:scale-110 group-hover:text-cyan-300"
+                {/* Toggle Switch */}
+                <button
+                  id="remove-bg-toggle"
+                  type="button"
+                  role="switch"
+                  aria-checked={removeBackground}
+                  onClick={() => setRemoveBackground(!removeBackground)}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer ${
+                    removeBackground ? "bg-indigo-600" : "bg-slate-700/60"
                   }`}
                 >
-                  <UploadCloud className="w-8 h-8" />
-                </div>
+                  <div
+                    className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                      removeBackground ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
 
-                <div>
-                  <p className="text-base sm:text-lg font-semibold text-slate-100 group-hover:text-white">
-                    {isDragging
-                      ? "¡Suelta tu imagen aquí!"
-                      : "Arrastra tu imagen aquí o haz clic para explorar"}
-                  </p>
-                  <p className="mt-1.5 text-xs sm:text-sm text-slate-400">
-                    Soporta formatos PNG, JPG o JPEG (Hasta 15 MB)
-                  </p>
-                </div>
+            {/* Control 2: Paleta de Colores (K-Means) */}
+            <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-colors hover:border-white/10 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                <Palette className="w-4 h-4 text-purple-400" />
+                <span>Paleta de Colores</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Reduce y agrupa a una cantidad fija con K-Means (ideal para logos y serigrafía).
+              </p>
 
-                <div className="flex items-center gap-2 pt-2">
-                  <span className="px-3 py-1 rounded-md bg-white/5 border border-white/10 text-xs font-mono text-slate-300">
-                    PNG
-                  </span>
-                  <span className="px-3 py-1 rounded-md bg-white/5 border border-white/10 text-xs font-mono text-slate-300">
-                    JPG
-                  </span>
-                  <span className="px-3 py-1 rounded-md bg-white/5 border border-white/10 text-xs font-mono text-slate-300">
-                    JPEG
-                  </span>
-                  <span className="px-3 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-xs font-mono text-indigo-300">
-                    → SVG Vector
-                  </span>
-                </div>
+              <div className="relative">
+                <select
+                  value={colorCount}
+                  onChange={(e) => setColorCount(Number(e.target.value))}
+                  className="w-full bg-[#0d1222] border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 appearance-none cursor-pointer"
+                >
+                  <option value={0}>Automático (Sin forzar paleta)</option>
+                  <option value={2}>2 Colores (Bicolor / Silueta)</option>
+                  <option value={4}>4 Colores (Logo minimalista)</option>
+                  <option value={8}>8 Colores (Paleta intermedia)</option>
+                  <option value={16}>16 Colores (Detalle rico)</option>
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5 pointer-events-none" />
+              </div>
+            </div>
+
+            {/* Control 3: Nivel de Detalle (Segment Control) */}
+            <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-colors hover:border-white/10 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                <Layers className="w-4 h-4 text-cyan-400" />
+                <span>Nivel de Detalle</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Ajusta el suavizado de curvas Bézier y descarte de ruido.
+              </p>
+
+              <div className="grid grid-cols-3 gap-1.5 bg-[#0d1222] p-1 rounded-xl border border-white/10">
+                {(["low", "medium", "high"] as DetailLevel[]).map((level) => {
+                  const labels = {
+                    low: "Bajo",
+                    medium: "Medio",
+                    high: "Alto",
+                  };
+                  const isSelected = detailLevel === level;
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => setDetailLevel(level)}
+                      className={`py-1.5 text-xs font-medium rounded-lg transition-all ${
+                        isSelected
+                          ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                          : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+                      }`}
+                    >
+                      {labels[level]}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
-        )}
 
-        {/* Tarjetas de Características Destacadas */}
-        <div className="mt-16 grid grid-cols-1 sm:grid-cols-3 gap-5 w-full max-w-4xl text-left">
-          <div className="p-5 rounded-2xl border border-white/5 bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-colors">
-            <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-3">
-              <SlidersHorizontal className="w-4 h-4" />
-            </div>
-            <div className="text-sm font-semibold text-slate-200 mb-1">
-              Filtro Mean Shift
-            </div>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Segmenta degradados y elimina ruido complejo transformando la imagen en regiones limpias y homogéneas.
-            </p>
+          {/* Botón Principal / CTA de Vectorización */}
+          <div className="p-5 border-t border-white/5 bg-[#090D18] space-y-3">
+            <button
+              onClick={handleVectorize}
+              disabled={!file || isLoading}
+              className={`w-full py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2.5 transition-all shadow-lg ${
+                !file
+                  ? "bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5"
+                  : isLoading
+                  ? "bg-indigo-600/50 text-indigo-200 cursor-wait border border-indigo-500/30"
+                  : "bg-gradient-to-r from-indigo-500 via-indigo-600 to-cyan-500 hover:from-indigo-600 hover:to-cyan-600 text-white shadow-indigo-500/25 hover:scale-[1.01] active:scale-[0.99]"
+              }`}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <span>Vectorizando con IA...</span>
+                </>
+              ) : (
+                <>
+                  <Wand2 className="w-4 h-4 text-white" />
+                  <span>{vectorUrl ? "Re-vectorizar" : "Vectorizar"}</span>
+                </>
+              )}
+            </button>
+
+            {vectorUrl && (
+              <button
+                onClick={handleDownloadSvg}
+                className="w-full py-2.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-cyan-300 font-medium text-xs flex items-center justify-center gap-2 transition-all"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Descargar SVG Final</span>
+              </button>
+            )}
           </div>
+        </aside>
 
-          <div className="p-5 rounded-2xl border border-white/5 bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-colors">
-            <div className="w-9 h-9 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-3">
-              <Sparkles className="w-4 h-4" />
+        {/* ======================================================== */}
+        {/* CANVAS PRINCIPAL: Área de Visualización y Comparativa   */}
+        {/* ======================================================== */}
+        <main
+          className="flex-1 relative flex items-center justify-center overflow-hidden p-6 select-none"
+          style={{
+            backgroundColor: "#070A12",
+            backgroundImage:
+              "radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+          }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {/* Alerta de Error flotante */}
+          {error && (
+            <div className="absolute top-6 left-6 right-6 max-w-xl mx-auto z-40 bg-red-500/15 border border-red-500/40 rounded-xl p-3.5 flex items-start gap-3 text-red-200 backdrop-blur-xl shadow-xl shadow-red-950/30 animate-in fade-in duration-200">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div className="flex-1 text-xs">
+                <span className="font-semibold block text-red-300">Error:</span>
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={() => setError(null)}
+                className="text-xs text-red-400 hover:text-white underline shrink-0 ml-2"
+              >
+                Descartar
+              </button>
             </div>
-            <div className="text-sm font-semibold text-slate-200 mb-1">
-              Curvas Bézier Suaves
-            </div>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Trazado spline exacto con preservación de esquinas y descarte automático de polígonos residuales.
-            </p>
-          </div>
+          )}
 
-          <div className="p-5 rounded-2xl border border-white/5 bg-white/[0.02] backdrop-blur-sm hover:border-white/10 transition-colors">
-            <div className="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 mb-3">
-              <FileCode2 className="w-4 h-4" />
-            </div>
-            <div className="text-sm font-semibold text-slate-200 mb-1">
-              SVG Listo para Producción
-            </div>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Descarga directa de archivos vectoriales listos para Figma, Illustrator o código HTML/React.
-            </p>
-          </div>
-        </div>
-      </main>
+          {/* Estado 1: VACÍO (Drag & Drop) */}
+          {!file && (
+            <div className="w-full max-w-lg z-10 animate-in fade-in duration-300">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    handleSelectFile(e.target.files[0]);
+                  }
+                }}
+                accept=".png,.jpg,.jpeg,.webp,.bmp,image/*"
+                className="hidden"
+              />
 
-      {/* Footer */}
-      <footer className="relative z-10 border-t border-white/5 py-6 text-center text-xs text-slate-500">
-        <p>© 2026 TraceAI SaaS. Todos los derechos reservados.</p>
-      </footer>
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className={`group rounded-3xl border-2 border-dashed p-12 sm:p-16 text-center cursor-pointer transition-all duration-300 backdrop-blur-2xl ${
+                  isDragging
+                    ? "border-cyan-400 bg-indigo-500/15 scale-[1.02] shadow-2xl shadow-cyan-500/20"
+                    : "border-indigo-500/30 bg-white/[0.02] hover:border-indigo-400/60 hover:bg-white/[0.04] shadow-2xl shadow-indigo-950/40"
+                }`}
+              >
+                <div className="flex flex-col items-center justify-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:scale-110 group-hover:text-cyan-300 transition-all duration-300 shadow-inner">
+                    <UploadCloud className="w-8 h-8" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-bold text-white tracking-tight">
+                      {isDragging
+                        ? "¡Suelta tu imagen aquí!"
+                        : "Arrastra una imagen o haz clic para explorar"}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Soporta PNG, JPG, JPEG, WEBP y BMP (Hasta 15 MB)
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <span className="px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300">
+                      PNG
+                    </span>
+                    <span className="px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300">
+                      JPG
+                    </span>
+                    <span className="px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300">
+                      WEBP
+                    </span>
+                    <span className="px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-[11px] font-mono text-indigo-300">
+                      → SVG Vector
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Estado 2: IMAGEN CARGADA (Pre-vectorización) */}
+          {file && !vectorUrl && (
+            <div className="w-full h-full flex flex-col items-center justify-center relative z-10 animate-in fade-in duration-300">
+              <div
+                className="max-w-2xl max-h-[75vh] p-4 rounded-2xl border border-white/10 bg-[#0B0F19]/80 backdrop-blur-xl shadow-2xl flex items-center justify-center overflow-hidden transition-transform duration-200"
+                style={{ transform: `scale(${zoom / 100})` }}
+              >
+                {previewUrl && (
+                  <img
+                    src={previewUrl}
+                    alt="Previsualización original"
+                    className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-md"
+                  />
+                )}
+              </div>
+
+              {!isLoading && (
+                <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 backdrop-blur-md">
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                  <span>Ajusta las opciones a la izquierda y presiona <strong>Vectorizar</strong></span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Estado 3: VECTORIZADO (Comparador Visual react-compare-slider) */}
+          {file && vectorUrl && isMounted && (
+            <div
+              className="w-full h-full max-w-4xl max-h-[80vh] flex items-center justify-center relative z-10 transition-transform duration-200"
+              style={{ transform: `scale(${zoom / 100})` }}
+            >
+              <div className="w-full h-full rounded-2xl overflow-hidden border border-indigo-500/30 bg-[#0B0F19] shadow-2xl shadow-indigo-950/50 flex flex-col">
+                <ReactCompareSlider
+                  itemOne={
+                    <div className="w-full h-full flex items-center justify-center bg-black/40 p-4 select-none relative">
+                      <div className="absolute top-3 left-3 z-10 px-2.5 py-1 rounded-md bg-black/70 border border-white/10 text-[11px] font-medium text-slate-300 backdrop-blur-md">
+                        Original (Ráster)
+                      </div>
+                      {previewUrl && (
+                        <img
+                          src={previewUrl}
+                          alt="Imagen original"
+                          className="max-h-[68vh] max-w-full object-contain pointer-events-none"
+                        />
+                      )}
+                    </div>
+                  }
+                  itemTwo={
+                    <div
+                      className="w-full h-full flex items-center justify-center p-4 select-none relative"
+                      style={{
+                        backgroundColor: "#0B0F19",
+                        backgroundImage:
+                          "radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px)",
+                        backgroundSize: "16px 16px",
+                      }}
+                    >
+                      <div className="absolute top-3 right-3 z-10 px-2.5 py-1 rounded-md bg-indigo-500/20 border border-indigo-500/40 text-[11px] font-semibold text-cyan-300 backdrop-blur-md">
+                        Vectorizado (SVG)
+                      </div>
+                      <img
+                        src={vectorUrl}
+                        alt="SVG Vectorizado"
+                        className="max-h-[68vh] max-w-full object-contain pointer-events-none filter drop-shadow-md"
+                      />
+                    </div>
+                  }
+                  handle={
+                    <ReactCompareSliderHandle
+                      buttonStyle={{
+                        backdropFilter: "blur(8px)",
+                        background: "#6366f1",
+                        border: "2px solid #a5b4fc",
+                        boxShadow: "0 0 15px rgba(99, 102, 241, 0.6)",
+                        width: "36px",
+                        height: "36px",
+                      }}
+                      linesStyle={{
+                        backgroundColor: "#6366f1",
+                        width: "2px",
+                      }}
+                    />
+                  }
+                  className="w-full h-full flex-1"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Overlay de Carga durante Vectorización */}
+          {isLoading && (
+            <div className="absolute inset-0 bg-[#070A12]/80 backdrop-blur-md z-30 flex flex-col items-center justify-center animate-in fade-in duration-200">
+              <div className="relative mb-5">
+                <div className="w-16 h-16 rounded-full border-3 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Wand2 className="w-6 h-6 text-cyan-400 animate-pulse" />
+                </div>
+              </div>
+              <p className="text-base font-bold text-white tracking-tight">
+                Generando Vectores con IA...
+              </p>
+              <p className="text-xs text-slate-400 mt-1.5">
+                {removeBackground
+                  ? "Aislando fondo con rembg • "
+                  : colorCount > 0
+                  ? `Cuantizando a ${colorCount} colores K-Means • `
+                  : "Segmentando colores • "}
+                Trazando curvas Bézier ({detailLevel})
+              </p>
+            </div>
+          )}
+
+          {/* Barra de Herramientas Flotante sobre el Canvas (Zoom & Download) */}
+          {file && (
+            <div className="absolute bottom-6 right-6 z-30 flex items-center gap-2 bg-[#0B0F19]/90 border border-white/10 rounded-2xl p-1.5 backdrop-blur-xl shadow-2xl">
+              <div className="flex items-center gap-1 border-r border-white/10 pr-2">
+                <button
+                  onClick={() => setZoom((z) => Math.max(50, z - 25))}
+                  title="Alejar (Zoom Out)"
+                  className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
+                >
+                  <ZoomOut className="w-4 h-4" />
+                </button>
+                <span className="text-[11px] font-mono text-slate-300 w-11 text-center">
+                  {zoom}%
+                </span>
+                <button
+                  onClick={() => setZoom((z) => Math.min(300, z + 25))}
+                  title="Acercar (Zoom In)"
+                  className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
+                >
+                  <ZoomIn className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setZoom(100)}
+                  title="Restablecer Zoom (100%)"
+                  className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {vectorUrl && (
+                <button
+                  onClick={handleDownloadSvg}
+                  title="Descargar archivo SVG"
+                  className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 hover:from-indigo-600 hover:to-cyan-600 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-all hover:scale-105 active:scale-95"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Descargar SVG</span>
+                </button>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
