@@ -22,10 +22,15 @@ El proyecto está diseñado bajo una arquitectura modular desacoplada:
 
 ```mermaid
 graph TD
-    User([Usuario / Navegador]) -->|HTTP / Interacción UI| Frontend[Frontend: Next.js + Tailwind CSS + TypeScript]
-    Frontend -->|REST API / Form-Data| Backend[Backend: FastAPI + Python 3.12]
-    Backend -->|Imagen temporal| Preprocess[Preprocesamiento: OpenCV + NumPy<br>Mean Shift Filtering: sp=15, sr=40]
-    Preprocess -->|Plastas sólidas de color| Engine[Motor de Vectorización: vtracer / IA]
+    User([Usuario / Navegador]) -->|HTTP / FormData| Frontend[Frontend: Next.js + Tailwind CSS + TypeScript]
+    Frontend -->|POST /api/vectorize| Backend[Backend: FastAPI + Python 3.12]
+
+    subgraph Pipeline ["Pipeline de IA Profesional"]
+        Backend -->|Paso A: remove_background| RemBG["Paso A: rembg (IA)<br>Aislamiento de sujeto y fondo transparente"]
+        RemBG -->|Paso B: color_count| Quant["Paso B: scikit-learn (K-Means)<br>Cuantización a paleta fija o Mean Shift"]
+        Quant -->|Paso C: detail_level| Engine["Paso C: vtracer<br>Vectorización dinámica adaptativa"]
+    end
+
     Engine -->|Salida SVG optimizada| Backend
     Backend -->|Stream / Payload SVG| Frontend
     Frontend -->|Renderizado y Descarga| User
@@ -35,7 +40,7 @@ graph TD
 
 | Capa | Tecnologías | Propósito |
 | :--- | :--- | :--- |
-| **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [OpenCV](https://opencv.org/), [NumPy](https://numpy.org/), [vtracer](https://github.com/visioncortex/vtracer) | API REST de alto rendimiento, preprocesamiento con segmentación Mean Shift (estilo Vector Magic) y pipeline de vectorización de imágenes. |
+| **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [rembg](https://github.com/danielgatis/rembg), [scikit-learn](https://scikit-learn.org/), [OpenCV](https://opencv.org/), [Pillow](https://python-pillow.org/), [vtracer](https://github.com/visioncortex/vtracer) | Pipeline de IA profesional: eliminación de fondos, cuantización K-Means, filtrado de contornos y vectorización adaptativa. |
 | **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/), [Lucide React](https://lucide.dev/) | Interfaz SaaS reactiva, zona interactiva de drag & drop, comparativa visual Antes/Después en tiempo real y descarga de SVG. |
 
 ---
@@ -168,7 +173,7 @@ Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend
 | Método | Endpoint | Parámetros / Payload | Descripción | Respuesta Ejemplo |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/` | Ninguno | Verificación de estado del servicio (Health Check). | `{"status": "TraceAI Backend API Online"}` |
-| `POST` | `/api/vectorize` | `multipart/form-data`<br>`file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB) | Preprocesa la imagen con segmentación Mean Shift (`pyrMeanShiftFiltering`: sp=15, sr=40) y la vectoriza a curvas Bézier SVG (`vtracer` con `filter_speckle=10` y `color_precision=4`) con limpieza segura de temporales. | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
+| `POST` | `/api/vectorize` | `multipart/form-data`<br>• `file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB)<br>• `remove_background`: `bool` (opcional, def: `false`)<br>• `color_count`: `int` (opcional, `0`=automático, `2..64` paleta fija K-Means)<br>• `detail_level`: `'low'` \| `'medium'` \| `'high'` (def: `'medium'`) | Pipeline profesional de IA: remoción de fondo con IA (`rembg`), cuantización de paleta con K-Means (`scikit-learn`), agrupamiento de color Mean Shift y vectorización adaptativa (`vtracer`). | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
 
 ---
 

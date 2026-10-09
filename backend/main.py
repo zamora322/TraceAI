@@ -1,29 +1,38 @@
 """API Backend de TraceAI.
 
-Aplicación FastAPI para el servicio SaaS de vectorización de imágenes impulsado por IA.
-Convierte imágenes de mapa de bits (PNG, JPG, WEBP, BMP) en gráficos vectoriales escalables (SVG).
+Servicio SaaS de alto rendimiento para vectorización inteligente de imágenes a SVG (competidor de Vector Magic).
+Incluye eliminación de fondo con IA (rembg), cuantización de color K-Means (scikit-learn),
+preprocesamiento avanzado y vectorización configurable con curvas Bézier (vtracer).
 """
 
 import logging
 import os
 import re
 import tempfile
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
+from PIL import Image
+from rembg import new_session, remove
+from sklearn.cluster import KMeans
 import vtracer
+
 from fastapi import (
     BackgroundTasks,
+    Depends,
     FastAPI,
     File,
+    Form,
     HTTPException,
     UploadFile,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 # Configuración de registro (logging)
 logging.basicConfig(level=logging.INFO)
@@ -32,18 +41,21 @@ logger = logging.getLogger("traceai.api")
 tags_metadata = [
     {
         "name": "Vectorización",
-        "description": "Operaciones para transformar imágenes de mapa de bits a gráficos vectoriales SVG escalables.",
+        "description": "Pipeline profesional de procesamiento y vectorización de imágenes a SVG.",
     },
     {
         "name": "Comprobación de Estado",
-        "description": "Endpoints de diagnóstico y monitoreo de salud del servicio.",
+        "description": "Diagnóstico y verificación de disponibilidad de la API.",
     },
 ]
 
 app = FastAPI(
     title="TraceAI API",
-    description="API backend de TraceAI - Servicio SaaS de vectorización inteligente de imágenes a SVG.",
-    version="0.1.0",
+    description=(
+        "API profesional de TraceAI para vectorización de imágenes a gráficos SVG escalables con IA. "
+        "Permite eliminación de fondo, cuantización de paleta con K-Means y ajuste dinámico de detalle."
+    ),
+    version="0.2.0",
     openapi_tags=tags_metadata,
 )
 
@@ -65,23 +77,100 @@ ALLOWED_MIME_TYPES = {
     "image/bmp",
     "image/x-ms-bmp",
 }
-MAX_FILE_SIZE = 15 * 1024 * 1024  # Límite de 15 MB
-CHUNK_SIZE = 1024 * 1024  # Fragmentos de 1 MB
+MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+# Sesión cacheada de rembg (modelo u2netp optimizado para velocidad en CPU)
+_rembg_session = None
+
+
+def get_rembg_session():
+    """Obtiene o inicializa de forma diferida la sesión de IA para remoción de fondo."""
+    global _rembg_session
+    if _rembg_session is None:
+        try:
+            logger.info("Inicializando modelo rembg (u2netp)...")
+            _rembg_session = new_session("u2netp")
+        except Exception as exc:
+            logger.warning(f"No se pudo cargar u2netp, intentando modelo predeterminado: {exc}")
+            _rembg_session = new_session()
+    return _rembg_session
+
+
+# ---------------------------------------------------------------------------
+# Modelos de Datos (Pydantic & FastAPI Form)
+# ---------------------------------------------------------------------------
+
+
+class DetailLevel(str, Enum):
+    """Niveles de detalle disponibles para la vectorización."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class VectorizeOptions(BaseModel):
+    """Opciones dinámicas para el pipeline de vectorización de TraceAI."""
+
+    remove_background: bool = Field(
+        default=False,
+        description="Indica si se debe remover el fondo de la imagen usando IA (rembg).",
+    )
+    color_count: int = Field(
+        default=0,
+        ge=0,
+        le=64,
+        description="Cantidad exacta de colores a cuantizar mediante K-Means (0 para automático, o entre 2 y 64).",
+    )
+    detail_level: DetailLevel = Field(
+        default=DetailLevel.MEDIUM,
+        description="Nivel de detalle de curvas y polígonos: 'low', 'medium' o 'high'.",
+    )
+
+    @classmethod
+    def as_form(
+        cls,
+        remove_background: bool = Form(
+            default=False,
+            description="Remover el fondo de la imagen automáticamente usando IA (rembg).",
+        ),
+        color_count: int = Form(
+            default=0,
+            ge=0,
+            le=64,
+            description="Reducir paleta exacta con K-Means (0 para automático, o 2, 4, 8, 16 para serigrafía/logos).",
+        ),
+        detail_level: DetailLevel = Form(
+            default=DetailLevel.MEDIUM,
+            description="Nivel de fidelidad vectorial: 'low' (polígonos planos), 'medium' (curvas equilibradas) o 'high' (máxima fidelidad).",
+        ),
+    ) -> "VectorizeOptions":
+        return cls(
+            remove_background=remove_background,
+            color_count=color_count,
+            detail_level=detail_level,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Utilidades de Seguridad y Limpieza
+# ---------------------------------------------------------------------------
 
 
 def cleanup_files(*paths: Optional[str]) -> None:
-    """Función auxiliar para eliminar archivos temporales de forma segura tras enviar la respuesta."""
+    """Elimina de forma segura archivos temporales en disco."""
     for path in paths:
         if path and os.path.exists(path):
             try:
                 os.remove(path)
-                logger.info(f"Archivo temporal eliminado correctamente: {path}")
+                logger.info(f"Archivo temporal eliminado: {path}")
             except OSError as exc:
                 logger.warning(f"Error al eliminar archivo temporal '{path}': {exc}")
 
 
 def validate_image_header(header: bytes) -> bool:
-    """Valida los bytes mágicos iniciales para verificar que el archivo sea una imagen real."""
+    """Valida los bytes mágicos de la cabecera para garantizar que el archivo sea una imagen real."""
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
         return True
     if header.startswith(b"\xff\xd8\xff"):
@@ -93,53 +182,140 @@ def validate_image_header(header: bytes) -> bool:
     return False
 
 
-def preprocess_image(input_path: str, output_path: str) -> None:
-    """Preprocesa la imagen usando Mean Shift Filtering (cv2.pyrMeanShiftFiltering).
+# ---------------------------------------------------------------------------
+# Pipeline de Procesamiento Avanzado
+# ---------------------------------------------------------------------------
 
-    - Convierte el espacio de color de BGR a RGB para no invertir tonalidades.
-    - Aplica agrupamiento de colores (Mean Shift Segmentation) con sp=15 y sr=40
-      para aplanar texturas y gradientes complejos en regiones de colores sólidos (estilo Vector Magic).
-    - Preserva el canal alfa (transparencia) si la imagen contiene canal Alpha.
-    - Convierte de RGB a BGR antes del guardado para mantener la fidelidad cromática con cv2.imwrite.
+
+def step_a_remove_background(image: Image.Image) -> Image.Image:
+    """Paso A: Elimina el fondo de la imagen utilizando rembg (IA).
+
+    Devuelve una imagen en formato RGBA con fondo transparente.
     """
-    img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise ValueError(f"No fue posible cargar la imagen con OpenCV desde '{input_path}'.")
+    logger.info("Paso A: Ejecutando remoción de fondo con rembg...")
+    session = get_rembg_session()
+    result = remove(image, session=session)
+    return result.convert("RGBA")
 
-    has_alpha = False
-    alpha = None
 
-    if len(img.shape) == 3 and img.shape[2] == 4:
-        has_alpha = True
-        bgr = img[:, :, :3]
-        alpha = img[:, :, 3]
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    elif len(img.shape) == 3 and img.shape[2] == 3:
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    elif len(img.shape) == 2:
-        rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+def step_b_quantize_kmeans(image: Image.Image, color_count: int) -> Image.Image:
+    """Paso B: Cuantización de color mediante K-Means de scikit-learn.
+
+    - Agrupa los colores de la imagen en exactamente `color_count` centroides.
+    - Preserva el canal Alfa (transparencia) aplicando el clustering únicamente a píxeles visibles.
+    - Esencial para diseño de logotipos, serigrafía y trazado vectorial limpio.
+    """
+    logger.info(f"Paso B: Aplicando cuantización K-Means a {color_count} colores...")
+    img_arr = np.array(image)
+    has_alpha = len(img_arr.shape) == 3 and img_arr.shape[2] == 4
+
+    if has_alpha:
+        rgb = img_arr[:, :, :3]
+        alpha = img_arr[:, :, 3]
+        mask = alpha > 0
+        if np.count_nonzero(mask) == 0:
+            return image
+        pixels_to_cluster = rgb[mask]
     else:
-        raise ValueError(f"Estructura o canales de imagen no soportados: {img.shape}")
+        rgb = img_arr[:, :, :3] if len(img_arr.shape) == 3 else img_arr
+        alpha = None
+        pixels_to_cluster = rgb.reshape(-1, 3)
 
-    # Agrupamiento de colores con Mean Shift Filtering (sp=15 radio espacial, sr=40 radio de color)
-    filtered_rgb = cv2.pyrMeanShiftFiltering(rgb, sp=15, sr=40)
+    n_samples = len(pixels_to_cluster)
+    if n_samples == 0:
+        return image
 
-    # Conversión de vuelta a BGR para guardar fielmente mediante cv2.imwrite
-    filtered_bgr = cv2.cvtColor(filtered_rgb, cv2.COLOR_RGB2BGR)
+    k = min(color_count, n_samples)
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto", max_iter=20)
+    labels = kmeans.fit_predict(pixels_to_cluster)
+    centers = np.clip(kmeans.cluster_centers_, 0, 255).astype(np.uint8)
+    quantized_pixels = centers[labels]
 
     if has_alpha and alpha is not None:
-        processed = cv2.merge([
-            filtered_bgr[:, :, 0],
-            filtered_bgr[:, :, 1],
-            filtered_bgr[:, :, 2],
-            alpha,
-        ])
+        out_rgb = np.copy(rgb)
+        out_rgb[mask] = quantized_pixels
+        final_arr = np.dstack([out_rgb, alpha])
     else:
-        processed = filtered_bgr
+        final_arr = quantized_pixels.reshape(rgb.shape)
 
-    success = cv2.imwrite(output_path, processed)
-    if not success:
-        raise IOError(f"No fue posible guardar la imagen preprocesada en '{output_path}'.")
+    return Image.fromarray(final_arr)
+
+
+def apply_mean_shift_smoothing(image: Image.Image) -> Image.Image:
+    """Suavizado Mean Shift con OpenCV cuando no se fuerza una paleta K-Means fija.
+
+    Aflana texturas y degradados complejos en plastas sólidas de color manteniendo bordes.
+    """
+    img_arr = np.array(image)
+    has_alpha = len(img_arr.shape) == 3 and img_arr.shape[2] == 4
+
+    if has_alpha:
+        bgr = cv2.cvtColor(img_arr[:, :, :3], cv2.COLOR_RGB2BGR)
+        alpha = img_arr[:, :, 3]
+    elif len(img_arr.shape) == 3 and img_arr.shape[2] == 3:
+        bgr = cv2.cvtColor(img_arr, cv2.COLOR_RGB2BGR)
+        alpha = None
+    else:
+        bgr = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
+        alpha = None
+
+    rgb_for_filter = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    filtered_rgb = cv2.pyrMeanShiftFiltering(rgb_for_filter, sp=15, sr=40)
+
+    if has_alpha and alpha is not None:
+        processed = np.dstack([filtered_rgb, alpha])
+    else:
+        processed = filtered_rgb
+
+    return Image.fromarray(processed)
+
+
+def step_c_vectorize(
+    image_path: str,
+    output_svg_path: str,
+    detail_level: DetailLevel,
+) -> None:
+    """Paso C: Vectorización dinámica con vtracer adaptada al nivel de detalle solicitado.
+
+    - 'low': filter_speckle=10, color_precision=3, mode='polygon' (ideal para logos planos).
+    - 'medium': filter_speckle=4, color_precision=6, mode='spline' (equilibrado).
+    - 'high': filter_speckle=1, color_precision=8, mode='spline' (arte complejo o fotos).
+    """
+    logger.info(f"Paso C: Vectorizando con VTracer en modo detail_level='{detail_level.value}'...")
+
+    if detail_level == DetailLevel.LOW:
+        filter_speckle = 10
+        color_precision = 3
+        mode = "polygon"
+    elif detail_level == DetailLevel.HIGH:
+        filter_speckle = 1
+        color_precision = 8
+        mode = "spline"
+    else:
+        filter_speckle = 4
+        color_precision = 6
+        mode = "spline"
+
+    vtracer.convert_image_to_svg_py(
+        image_path,
+        output_svg_path,
+        colormode="color",
+        hierarchical="stacked",
+        mode=mode,
+        filter_speckle=filter_speckle,
+        color_precision=color_precision,
+        layer_difference=16,
+        corner_threshold=60,
+        length_threshold=4.0,
+        max_iterations=10,
+        splice_threshold=45,
+        path_precision=8,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints de la API
+# ---------------------------------------------------------------------------
 
 
 @app.get(
@@ -156,7 +332,7 @@ async def root() -> dict[str, str]:
 @app.post(
     "/api/vectorize",
     tags=["Vectorización"],
-    summary="Vectorizar imagen a SVG",
+    summary="Pipeline profesional de vectorización a SVG",
     response_description="Archivo vectorial SVG generado exitosamente",
     responses={
         200: {
@@ -170,24 +346,25 @@ async def root() -> dict[str, str]:
             "description": "Archivo demasiado pesado: excede el límite máximo permitido de 15 MB.",
         },
         500: {
-            "description": "Error interno del servidor: fallo en el preprocesamiento de OpenCV o en el motor de vectorización.",
+            "description": "Error interno del servidor: fallo en alguna fase del pipeline de IA o vectorización.",
         },
     },
 )
 async def vectorize_image(
     background_tasks: BackgroundTasks,
+    options: VectorizeOptions = Depends(VectorizeOptions.as_form),
     file: UploadFile = File(
         ...,
-        description="Archivo de imagen rasterizada a vectorizar (formatos soportados: PNG, JPG, JPEG, WEBP, BMP; máx. 15 MB)",
+        description="Archivo de imagen rasterizada a procesar y vectorizar (formatos: PNG, JPG, JPEG, WEBP, BMP; máx. 15 MB).",
     ),
 ) -> FileResponse:
-    """Convierte una imagen de mapa de bits (rasterizada) a formato vectorial SVG de alta precisión.
+    """Orquesta el pipeline profesional de procesamiento y vectorización de imágenes.
 
-    - **Validaciones de Seguridad:** Comprueba extensión permitida, tipo MIME, tamaño y firmas binarias (*magic bytes*).
-    - **Almacenamiento Temporal Seguro:** Guarda la imagen temporalmente en disco mediante un identificador seguro.
-    - **Preprocesamiento con Mean Shift (OpenCV):** Agrupamiento de color con `pyrMeanShiftFiltering` (sp=15, sr=40) para transformar degradados y texturas complejas en regiones sólidas y limpias, preservando el canal Alpha.
-    - **Vectorización Optimizada (`vtracer`):** Configurado con `filter_speckle=10` para descartar artefactos pequeños, `color_precision=4` y modo `spline` para curvas Bézier exactas.
-    - **Limpieza Automática:** Tarea en segundo plano (*BackgroundTasks*) que elimina de inmediato los archivos temporales tras la transmisión al cliente.
+    1. **Validaciones de Seguridad:** Comprobación de formato, tamaño y cabeceras binarias (*magic bytes*).
+    2. **Paso A (Eliminación de fondo con IA):** Si `remove_background` es verdadero, aísla el sujeto principal y hace transparente el fondo (`rembg`).
+    3. **Paso B (Cuantización K-Means / Suavizado):** Si `color_count > 0`, reduce la paleta exactamente a esa cantidad de colores con `KMeans`. Si es 0, aplica agrupamiento Mean Shift para evitar degradados irregulares.
+    4. **Paso C (Vectorización Dinámica con VTracer):** Aplica la configuración óptima según `detail_level` ('low', 'medium', 'high').
+    5. **Limpieza Asíncrona:** Elimina todos los archivos temporales generados una vez que el SVG ha sido enviado al cliente.
     """
     if not file.filename:
         raise HTTPException(
@@ -212,11 +389,11 @@ async def vectorize_image(
         )
 
     input_temp_path: Optional[str] = None
-    preprocessed_temp_path: Optional[str] = None
+    processed_temp_path: Optional[str] = None
     output_svg_path: Optional[str] = None
 
     try:
-        # Crear archivo temporal seguro en disco para la imagen de entrada
+        # Guardar archivo original en ubicación temporal segura
         with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_input:
             input_temp_path = temp_input.name
             total_bytes = 0
@@ -246,33 +423,35 @@ async def vectorize_image(
                     detail="El archivo proporcionado está vacío.",
                 )
 
-        # Generar ruta temporal para la imagen preprocesada con OpenCV
-        preprocessed_temp_path = f"{input_temp_path}_preprocessed{file_ext}"
-
-        # Ejecutar preprocesamiento con OpenCV (Filtro bilateral + Afilado de bordes)
-        logger.info(f"Preprocesando imagen con OpenCV: {file.filename}")
-        preprocess_image(input_temp_path, preprocessed_temp_path)
-
-        # Ruta temporal de destino para el archivo SVG resultante
-        output_svg_path = f"{input_temp_path}.svg"
-
-        # Ejecutar proceso de vectorización con la imagen preprocesada
-        logger.info(f"Vectorizando imagen con vtracer: {file.filename} ({total_bytes} bytes)")
-        vtracer.convert_image_to_svg_py(
-            preprocessed_temp_path,
-            output_svg_path,
-            colormode="color",
-            hierarchical="stacked",
-            mode="spline",
-            filter_speckle=10,
-            color_precision=4,
-            layer_difference=16,
-            corner_threshold=60,
-            length_threshold=4.0,
-            max_iterations=10,
-            splice_threshold=45,
-            path_precision=8,
+        logger.info(
+            f"Iniciando pipeline para '{file.filename}' ({total_bytes} bytes). "
+            f"Opciones: remove_background={options.remove_background}, "
+            f"color_count={options.color_count}, detail_level={options.detail_level.value}"
         )
+
+        # Cargar imagen en memoria con Pillow
+        with Image.open(input_temp_path) as loaded_img:
+            current_image = loaded_img.convert("RGBA" if options.remove_background or loaded_img.mode == "RGBA" else "RGB")
+
+        # Paso A: Remover fondo si se solicitó
+        if options.remove_background:
+            current_image = step_a_remove_background(current_image)
+
+        # Paso B: Cuantización de color K-Means o suavizado Mean Shift
+        if options.color_count > 0:
+            current_image = step_b_quantize_kmeans(current_image, options.color_count)
+        else:
+            current_image = apply_mean_shift_smoothing(current_image)
+
+        # Guardar imagen procesada intermedia para VTracer
+        output_img_ext = ".png" if current_image.mode == "RGBA" else file_ext
+        with tempfile.NamedTemporaryFile(suffix=f"_processed{output_img_ext}", delete=False) as temp_proc:
+            processed_temp_path = temp_proc.name
+            current_image.save(processed_temp_path)
+
+        # Paso C: Vectorización dinámica con VTracer
+        output_svg_path = f"{processed_temp_path}.svg"
+        step_c_vectorize(processed_temp_path, output_svg_path, options.detail_level)
 
         if not os.path.exists(output_svg_path) or os.path.getsize(output_svg_path) == 0:
             raise HTTPException(
@@ -280,13 +459,13 @@ async def vectorize_image(
                 detail="El motor de vectorización no pudo generar un archivo SVG válido.",
             )
 
-        # Programar la limpieza asíncrona de todos los archivos temporales tras el envío
+        # Programar limpieza asíncrona de todos los archivos temporales
         background_tasks.add_task(
-            cleanup_files, input_temp_path, preprocessed_temp_path, output_svg_path
+            cleanup_files, input_temp_path, processed_temp_path, output_svg_path
         )
 
-        # Generar nombre de descarga seguro
-        safe_stem = re.sub(r"[^\w\-]", "_", Path(file.filename).stem) or "vectorized"
+        # Nombre de descarga seguro
+        safe_stem = re.sub(r"[^\w\-]", "_", Path(file.filename).stem) or "vectorizado"
         download_filename = f"{safe_stem}.svg"
 
         return FileResponse(
@@ -299,17 +478,15 @@ async def vectorize_image(
         )
 
     except HTTPException:
-        # En caso de error HTTP, limpiar temporales inmediatamente
-        cleanup_files(input_temp_path, preprocessed_temp_path, output_svg_path)
+        cleanup_files(input_temp_path, processed_temp_path, output_svg_path)
         raise
 
     except Exception as exc:
-        # En caso de excepción no controlada, limpiar temporales y reportar error
-        cleanup_files(input_temp_path, preprocessed_temp_path, output_svg_path)
-        logger.error(f"Error durante el procesamiento o vectorización: {exc}", exc_info=True)
+        cleanup_files(input_temp_path, processed_temp_path, output_svg_path)
+        logger.error(f"Error en el pipeline de vectorización: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Fallo en el procesamiento o vectorización: {str(exc)}",
+            detail=f"Fallo en el pipeline de IA y vectorización: {str(exc)}",
         ) from exc
 
 
