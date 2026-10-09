@@ -5,6 +5,7 @@ Incluye eliminación de fondo con IA (rembg), cuantización de color K-Means (sc
 preprocesamiento avanzado y vectorización configurable con curvas Bézier (vtracer).
 """
 
+import io
 import logging
 import os
 import re
@@ -20,6 +21,9 @@ from rembg import new_session, remove
 from sklearn.cluster import KMeans
 import vtracer
 
+from dxf_service import convert_svg_to_dxf, generate_multitrack_zip
+from upscaler import upscale_image_4x
+
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -31,7 +35,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 # Configuración de registro (logging)
@@ -44,6 +48,14 @@ tags_metadata = [
         "description": "Pipeline profesional de procesamiento y vectorización de imágenes a SVG.",
     },
     {
+        "name": "Paleta de Colores",
+        "description": "Análisis inteligente, extracción K-Means y cuantización con paleta interactiva.",
+    },
+    {
+        "name": "Exportación Industrial",
+        "description": "Conversión a formato CAD DXF (AutoCAD) y empaquetado multicapa en ZIP.",
+    },
+    {
         "name": "Comprobación de Estado",
         "description": "Diagnóstico y verificación de disponibilidad de la API.",
     },
@@ -53,9 +65,10 @@ app = FastAPI(
     title="TraceAI API",
     description=(
         "API profesional de TraceAI para vectorización de imágenes a gráficos SVG escalables con IA. "
-        "Permite eliminación de fondo, cuantización de paleta con K-Means y ajuste dinámico de detalle."
+        "Permite Super-Resolución 4x (Real-ESRGAN), eliminación de fondo (rembg), editor interactivo de "
+        "paleta K-Means, trazado vectorial (vtracer), exportación DXF y generación de paquetes ZIP multicapa."
     ),
-    version="0.2.0",
+    version="0.3.0",
     openapi_tags=tags_metadata,
 )
 
@@ -127,6 +140,14 @@ class VectorizeOptions(BaseModel):
         default=DetailLevel.MEDIUM,
         description="Nivel de detalle de curvas y polígonos: 'low', 'medium' o 'high'.",
     )
+    super_resolution: bool = Field(
+        default=False,
+        description="Aplica Super-Resolución 4x neuronal con Real-ESRGAN antes de vectorizar.",
+    )
+    custom_palette: Optional[str] = Field(
+        default=None,
+        description="Paleta de colores hexadecimales personalizada (separados por comas, ej: '#FF0000,#00FF00').",
+    )
 
     @classmethod
     def as_form(
@@ -145,11 +166,21 @@ class VectorizeOptions(BaseModel):
             default=DetailLevel.MEDIUM,
             description="Nivel de fidelidad vectorial: 'low' (polígonos planos), 'medium' (curvas equilibradas) o 'high' (máxima fidelidad).",
         ),
+        super_resolution: bool = Form(
+            default=False,
+            description="Escalar 4x con IA (Real-ESRGAN) para reconstruir detalles antes del trazado.",
+        ),
+        custom_palette: Optional[str] = Form(
+            default=None,
+            description="Paleta hexadecimal editada o fusionada en el frontend (separada por comas).",
+        ),
     ) -> "VectorizeOptions":
         return cls(
             remove_background=remove_background,
             color_count=color_count,
             detail_level=detail_level,
+            super_resolution=super_resolution,
+            custom_palette=custom_palette,
         )
 
 
@@ -283,6 +314,99 @@ def step_a_remove_background(image: Image.Image) -> Image.Image:
     # Purificar la máscara alfa eliminando halos blancos y residuos
     refined_rgba = clean_and_refine_alpha_matte(result_rgba, original_rgb)
     return refined_rgba
+
+
+def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    """Convierte un color hexadecimal a tupla (R, G, B)."""
+    clean = hex_str.strip().lstrip("#")
+    if len(clean) == 3:
+        clean = "".join([c * 2 for c in clean])
+    if len(clean) == 6:
+        try:
+            return (int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16))
+        except ValueError:
+            pass
+    return (128, 128, 128)
+
+
+def rgb_to_hex(r: int, g: int, b: int) -> str:
+    """Convierte componentes RGB a cadena hexadecimal #RRGGBB."""
+    return f"#{int(r):02X}{int(g):02X}{int(b):02X}"
+
+
+def extract_palette_kmeans(image: Image.Image, color_count: int) -> list[str]:
+    """Extrae los N colores más representativos de la imagen mediante K-Means ordenados por dominancia."""
+    img_arr = np.array(image)
+    has_alpha = len(img_arr.shape) == 3 and img_arr.shape[2] == 4
+
+    if has_alpha:
+        rgb = img_arr[:, :, :3]
+        alpha = img_arr[:, :, 3]
+        mask = alpha > 0
+        if np.count_nonzero(mask) == 0:
+            return ["#000000"]
+        pixels = rgb[mask]
+    else:
+        rgb = img_arr[:, :, :3] if len(img_arr.shape) == 3 else img_arr
+        pixels = rgb.reshape(-1, 3)
+
+    if len(pixels) == 0:
+        return ["#000000"]
+
+    k = min(color_count, len(pixels))
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init="auto", max_iter=20)
+    labels = kmeans.fit_predict(pixels)
+    centers = np.clip(kmeans.cluster_centers_, 0, 255).astype(np.uint8)
+
+    # Contar frecuencia de cada cluster para ordenar por dominancia
+    counts = np.bincount(labels, minlength=k)
+    sorted_indices = np.argsort(-counts)
+
+    hex_colors = [rgb_to_hex(*centers[i]) for i in sorted_indices]
+    return hex_colors
+
+
+def quantize_to_custom_palette(
+    image: Image.Image, hex_colors: list[str]
+) -> Image.Image:
+    """Cuantiza la imagen mapeando cada píxel visible al color más cercano de una paleta personalizada."""
+    if not hex_colors:
+        return image
+
+    centers = np.array([hex_to_rgb(h) for h in hex_colors], dtype=np.float32)
+
+    img_arr = np.array(image)
+    has_alpha = len(img_arr.shape) == 3 and img_arr.shape[2] == 4
+
+    if has_alpha:
+        rgb = img_arr[:, :, :3]
+        alpha = img_arr[:, :, 3]
+        mask = alpha > 0
+        if np.count_nonzero(mask) == 0:
+            return image
+        pixels = rgb[mask].astype(np.float32)
+    else:
+        rgb = img_arr[:, :, :3] if len(img_arr.shape) == 3 else img_arr
+        alpha = None
+        pixels = rgb.reshape(-1, 3).astype(np.float32)
+
+    if len(pixels) == 0:
+        return image
+
+    # Calcular distancias euclidianas a los centroides personalizados
+    distances = np.linalg.norm(pixels[:, None, :] - centers[None, :, :], axis=2)
+    labels = np.argmin(distances, axis=1)
+    quantized_pixels = centers[labels].astype(np.uint8)
+
+    if has_alpha and alpha is not None:
+        out_rgb = np.copy(rgb)
+        out_rgb[mask] = quantized_pixels
+        out_rgb[alpha == 0] = [0, 0, 0]
+        final_arr = np.dstack([out_rgb, alpha])
+    else:
+        final_arr = quantized_pixels.reshape(rgb.shape)
+
+    return Image.fromarray(final_arr)
 
 
 def step_b_quantize_kmeans(image: Image.Image, color_count: int) -> Image.Image:
@@ -521,14 +645,57 @@ async def vectorize_image(
 
         # Cargar imagen en memoria con Pillow
         with Image.open(input_temp_path) as loaded_img:
-            current_image = loaded_img.convert("RGBA" if options.remove_background or loaded_img.mode == "RGBA" else "RGB")
+            current_image = loaded_img.convert(
+                "RGBA"
+                if options.remove_background or loaded_img.mode == "RGBA"
+                else "RGB"
+            )
+
+        # Paso 0: Super-Resolución Neuronal 4x con Real-ESRGAN
+        if options.super_resolution:
+            logger.info("Paso 0: Aplicando Super-Resolución neuronal 4x (Real-ESRGAN)...")
+            is_rgba = current_image.mode == "RGBA"
+            arr_np = np.array(current_image)
+            arr_bgr = (
+                cv2.cvtColor(arr_np, cv2.COLOR_RGBA2BGRA)
+                if is_rgba
+                else cv2.cvtColor(arr_np, cv2.COLOR_RGB2BGR)
+            )
+            upscaled_bgr = upscale_image_4x(arr_bgr)
+            if upscaled_bgr.shape[2] == 4:
+                current_image = Image.fromarray(
+                    cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGRA2RGBA)
+                )
+            else:
+                current_image = Image.fromarray(
+                    cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
+                )
 
         # Paso A: Remover fondo si se solicitó
         if options.remove_background:
             current_image = step_a_remove_background(current_image)
 
-        # Paso B: Cuantización de color K-Means o suavizado Mean Shift
-        if options.color_count > 0:
+        # Paso B: Paleta personalizada, cuantización K-Means o suavizado Mean Shift
+        if options.custom_palette:
+            custom_hex_list = [
+                c.strip()
+                for c in options.custom_palette.split(",")
+                if c.strip().startswith("#")
+            ]
+            if custom_hex_list:
+                logger.info(
+                    f"Paso B: Forzando paleta personalizada ({len(custom_hex_list)} colores): {custom_hex_list}"
+                )
+                current_image = quantize_to_custom_palette(
+                    current_image, custom_hex_list
+                )
+            elif options.color_count > 0:
+                current_image = step_b_quantize_kmeans(
+                    current_image, options.color_count
+                )
+            else:
+                current_image = apply_mean_shift_smoothing(current_image)
+        elif options.color_count > 0:
             current_image = step_b_quantize_kmeans(current_image, options.color_count)
         else:
             current_image = apply_mean_shift_smoothing(current_image)
@@ -577,6 +744,148 @@ async def vectorize_image(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Fallo en el pipeline de IA y vectorización: {str(exc)}",
+        ) from exc
+
+
+@app.post(
+    "/api/palette",
+    tags=["Paleta de Colores"],
+    summary="Extraer paleta de colores dominantes",
+    response_description="Lista de colores dominantes en formato hexadecimal",
+    responses={
+        200: {
+            "description": "Colores extraídos exitosamente mediante clustering K-Means.",
+            "content": {"application/json": {"example": {"colors": ["#1A2B3C", "#FFFFFF", "#FF5733"]}}},
+        },
+        400: {"description": "Archivo de imagen inválido o corrupto."},
+        413: {"description": "El archivo excede el tamaño máximo permitido."},
+    },
+)
+async def extract_palette(
+    file: UploadFile = File(..., description="Imagen a analizar para extraer su paleta cromática."),
+    color_count: int = Form(4, ge=2, le=32, description="Cantidad de colores a identificar con K-Means."),
+    remove_background: bool = Form(False, description="Remover fondo antes de extraer la paleta."),
+) -> dict[str, list[str]]:
+    """Analiza la imagen y extrae sus colores más representativos para el Editor Interactivo."""
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nombre de archivo inválido o vacío.",
+        )
+
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Formato no permitido ('{file_ext}').",
+        )
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El archivo proporcionado está vacío.",
+        )
+
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El archivo excede el tamaño máximo permitido (15 MB).",
+        )
+
+    if not validate_image_header(file_bytes[:32]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El archivo no corresponde a una imagen válida o está dañado.",
+        )
+
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as loaded_img:
+            current_image = loaded_img.convert(
+                "RGBA" if remove_background or loaded_img.mode == "RGBA" else "RGB"
+            )
+
+        if remove_background:
+            current_image = step_a_remove_background(current_image)
+
+        colors = extract_palette_kmeans(current_image, color_count)
+        return {"colors": colors}
+
+    except Exception as exc:
+        logger.error(f"Error al analizar paleta cromática: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Fallo al extraer paleta con K-Means: {str(exc)}",
+        ) from exc
+
+
+@app.post(
+    "/api/export/dxf",
+    tags=["Exportación Industrial"],
+    summary="Exportar diseño SVG a formato CAD DXF",
+    response_description="Archivo DXF (AutoCAD R2010) listo para corte láser o CNC",
+)
+async def export_dxf(
+    svg_content: str = Form(..., description="Contenido XML del archivo SVG a convertir."),
+    filename: Optional[str] = Form("vectorizado", description="Nombre base para el archivo DXF."),
+) -> Response:
+    """Convierte el diseño SVG a formato DXF R2010 con capas organizadas por color para manufactura."""
+    if not svg_content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El contenido SVG proporcionado está vacío.",
+        )
+
+    try:
+        dxf_bytes = convert_svg_to_dxf(svg_content)
+        safe_stem = re.sub(r"[^\w\-]", "_", filename or "vectorizado")
+        out_name = f"{safe_stem}.dxf"
+
+        return Response(
+            content=dxf_bytes,
+            media_type="application/dxf",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        )
+    except Exception as exc:
+        logger.error(f"Error al generar archivo DXF: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No se pudo generar el archivo DXF: {str(exc)}",
+        ) from exc
+
+
+@app.post(
+    "/api/export/layers-zip",
+    tags=["Exportación Industrial"],
+    summary="Exportar diseño separado por capas de color en ZIP",
+    response_description="Archivo ZIP multipista con archivos SVG y DXF por capa de color",
+)
+async def export_layers_zip(
+    svg_content: str = Form(..., description="Contenido XML del archivo SVG a segmentar."),
+    filename: Optional[str] = Form("vectorizado", description="Nombre base para el paquete ZIP."),
+) -> Response:
+    """Separa el diseño por cada color único y genera un paquete ZIP con capas independientes SVG y DXF."""
+    if not svg_content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El contenido SVG proporcionado está vacío.",
+        )
+
+    try:
+        safe_stem = re.sub(r"[^\w\-]", "_", filename or "vectorizado")
+        zip_bytes = generate_multitrack_zip(svg_content, safe_stem)
+        out_name = f"{safe_stem}_capas.zip"
+
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        )
+    except Exception as exc:
+        logger.error(f"Error al generar paquete ZIP multipista: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No se pudo generar el paquete ZIP multipista: {str(exc)}",
         ) from exc
 
 

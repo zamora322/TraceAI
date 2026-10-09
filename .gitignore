@@ -45,6 +45,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+backend/models/
+*.onnx
 
 # Next.js / Frontend builds
 .next/

@@ -147,28 +147,34 @@ Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend
    - Arrastra una imagen (`.png`, `.jpg`, `.jpeg`, `.webp` o `.bmp`) sobre el canvas central. Observa la animación con iluminación cian y elevación.
    - O haz clic sobre el área para seleccionar la imagen desde tu explorador de archivos.
 
-2. **Configuración de Parámetros de IA en el Sidebar:**
-   - **Eliminar Fondo (IA):** Activa el switch para aislar el sujeto mediante `rembg`.
-   - **Paleta de Colores:** Selecciona una cantidad fija con K-Means (*Automático, 2, 4, 8 o 16 colores*) ideal para serigrafía o logotipos.
+2. **Configuración de Parámetros de IA en el Sidebar (Características PRO):**
+   - **Super-Resolución 4x (IA):** Si la imagen tiene baja resolución (<600px), el sistema activa automáticamente este switch. Utiliza la red neuronal **Real-ESRGAN** en CPU mediante ONNX Runtime para reconstruir microdetalles y evitar bordes dentados.
+   - **Eliminar Fondo (IA):** Activa el switch para aislar el sujeto mediante `rembg` con purificación de bordes (*defringing*).
+   - **Paleta de Colores & Editor Interactivo:**
+     - Selecciona una cantidad de colores (*2, 4, 8 o 16 colores*). El sistema extraerá automáticamente la paleta con K-Means.
+     - **Editar Tono:** Haz clic sobre cualquier círculo de color para abrir el selector de tono y ajustar su valor hexadecimal.
+     - **Fusionar Colores (Merge):** Marca 2 colores y pulsa **"Fusionar"** para consolidar tonos redundantes antes del trazado vectorial.
    - **Nivel de Detalle:** Elige entre *Bajo (polígonos planos)*, *Medio (curvas suaves)* o *Alto (fidelidad máxima)*.
-   - Haz clic en **"Vectorizar"** para enviar la petición al backend.
+   - Haz clic en **"Vectorizar"** para procesar la imagen con las opciones seleccionadas.
 
 3. **Comparador Visual Deslizante (Antes y Después):**
    - Una vez recibido el vector, el canvas activa el comparador interactivo `react-compare-slider`.
    - Arrastra la barra vertical divisoria para comparar en tiempo real el mapa de bits original con el vector SVG sobre una cuadrícula de transparencia.
 
 4. **Navegación Interactiva, Zoom y Paneo en el Canvas:**
-   - **Zoom con scroll del ratón:** Gira la rueda del ratón (`wheel`) sobre el canvas para acercar o alejar suavemente enfocado en la posición del puntero. Sin el tope previo del 300% (rango dinámico de 20% hasta 3000%), ideal para inspeccionar curvas Bézier y detalles a nivel subpíxel.
-   - **Arrastre de la imagen (Pan):** Haz clic y arrastra con el ratón en cualquier parte del lienzo, usa el botón central (clic de rueda) o mantén presionada la **barra espaciadora** para desplazarte con fluidez sin interferir con el divisor deslizante.
-   - **Restablecer vista:** Haz doble clic en el lienzo o presiona el botón de reinicio en la barra flotante para centrar la imagen al 100%.
-   - **Descarga vectorial:** Pulsa **"Descargar SVG"** para obtener el archivo listo para producción.
+   - **Zoom con scroll del ratón:** Gira la rueda del ratón (`wheel`) sobre el canvas para acercar o alejar suavemente enfocado en la posición del puntero. Sin tope artificial (rango de 20% hasta 3000%), ideal para inspeccionar curvas Bézier a nivel subpíxel.
+   - **Arrastre de la imagen (Pan):** Haz clic y arrastra con el ratón en cualquier parte del lienzo, usa el botón central o mantén presionada la **barra espaciadora**.
+   - **Restablecer vista:** Haz doble clic en el lienzo o presiona el botón de reinicio para centrar la imagen al 100%.
 
-5. **Reinicio y Nuevas Pruebas:**
-   - Pulsa **"Nueva Imagen"** en la barra superior para reiniciar los estados y procesar un nuevo archivo.
+5. **Menú de Exportación PRO (Multi-formato):**
+   - Despliega el menú de exportación en la esquina inferior derecha:
+     - **Descargar SVG:** Vector estándar optimizado para diseño web y gráfico.
+     - **Descargar DXF:** Formato CAD industrial (AutoCAD R2010) con capas organizadas por color para corte láser, plasma y CNC.
+     - **Separar por Capas (.ZIP):** Paquete comprimido con subcarpetas `svg_layers/` y `dxf_layers/` con archivos individuales por cada color para serigrafía, vinil textil y rotulación.
 
-6. **Comprobación de Errores y Seguridad:**
-   - Prueba a subir un archivo no soportado (como un archivo de texto o ejecutable) para comprobar que el banner de alerta amigable informa el error de forma clara sin romper la aplicación.
-   - Detén temporalmente el backend para validar el mensaje de servidor no disponible.
+6. **Reinicio y Comprobación de Errores:**
+   - Pulsa **"Nueva Imagen"** en la barra superior para reiniciar estados y procesar un nuevo archivo.
+   - Sube un archivo no soportado para verificar los mensajes descriptivos de error.
 
 ---
 
@@ -177,7 +183,10 @@ Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend
 | Método | Endpoint | Parámetros / Payload | Descripción | Respuesta Ejemplo |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/` | Ninguno | Verificación de estado del servicio (Health Check). | `{"status": "TraceAI Backend API Online"}` |
-| `POST` | `/api/vectorize` | `multipart/form-data`<br>• `file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB)<br>• `remove_background`: `bool` (opcional, def: `false`)<br>• `color_count`: `int` (opcional, `0`=automático, `2..64` paleta fija K-Means)<br>• `detail_level`: `'low'` \| `'medium'` \| `'high'` (def: `'medium'`) | Pipeline profesional de IA: remoción de fondo con IA (`rembg`), cuantización de paleta con K-Means (`scikit-learn`), agrupamiento de color Mean Shift y vectorización adaptativa (`vtracer`). | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
+| `POST` | `/api/vectorize` | `multipart/form-data`<br>• `file`: Imagen (PNG, JPG, WEBP, BMP, máx 15MB)<br>• `remove_background`: `bool` (opcional, def: `false`)<br>• `color_count`: `int` (opcional, `0`=auto, `2..64` K-Means)<br>• `detail_level`: `'low'` \| `'medium'` \| `'high'` (def: `'medium'`)<br>• `super_resolution`: `bool` (opcional, Real-ESRGAN 4x)<br>• `custom_palette`: `str` (opcional, lista Hex ej: `"#FF0000,#00FF00"`) | Pipeline profesional de IA: Super-Resolución 4x (Real-ESRGAN), remoción de fondo (`rembg`), cuantización K-Means / paleta personalizada y vectorización adaptativa (`vtracer`). | Archivo SVG descargable (`image/svg+xml`) con cabecera `Content-Disposition`. |
+| `POST` | `/api/palette` | `multipart/form-data`<br>• `file`: Imagen<br>• `color_count`: `int` (2..32, def: `4`)<br>• `remove_background`: `bool` (def: `false`) | Analiza y extrae los N colores más dominantes con K-Means ordenados por frecuencia de píxeles. | `{"colors": ["#1A2B3C", "#FFFFFF", "#FF5733"]}` |
+| `POST` | `/api/export/dxf` | `form-data`<br>• `svg_content`: Texto plano XML del SVG<br>• `filename`: Nombre base del archivo | Convierte las curvas SVG a entidades CAD DXF (AutoCAD R2010) con capas asignadas por color. | Archivo binario DXF (`application/dxf`). |
+| `POST` | `/api/export/layers-zip` | `form-data`<br>• `svg_content`: Texto plano XML del SVG<br>• `filename`: Nombre base del archivo | Separa el diseño por cada color único y empaqueta capas independientes SVG y DXF en un archivo comprimido. | Archivo comprimido ZIP (`application/zip`). |
 
 ---
 

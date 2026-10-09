@@ -8,3 +8,5 @@ rembg[cpu]>=2.0.50
 onnxruntime>=1.17.0
 scikit-learn>=1.4.0
 Pillow>=10.2.0
+ezdxf>=1.4.0
+svgpathtools>=1.8.0

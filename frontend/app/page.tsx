@@ -21,8 +21,14 @@ import {
   Sliders,
   Layers,
   ChevronDown,
+  ChevronUp,
   Move,
   Hand,
+  Zap,
+  FileArchive,
+  Combine,
+  Pipette,
+  Check,
 } from "lucide-react";
 import { ReactCompareSlider, ReactCompareSliderHandle } from "react-compare-slider";
 
@@ -36,11 +42,23 @@ export default function Home() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [vectorUrl, setVectorUrl] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string>("");
+  const [imageDimensions, setImageDimensions] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
 
   // Parámetros de Vectorización
   const [removeBackground, setRemoveBackground] = useState<boolean>(false);
   const [colorCount, setColorCount] = useState<number>(0);
   const [detailLevel, setDetailLevel] = useState<DetailLevel>("medium");
+  const [superResolution, setSuperResolution] = useState<boolean>(false);
+  const [isLowRes, setIsLowRes] = useState<boolean>(false);
+
+  // Editor Interactivo de Paleta
+  const [customPalette, setCustomPalette] = useState<string[]>([]);
+  const [originalPalette, setOriginalPalette] = useState<string[]>([]);
+  const [isExtractingPalette, setIsExtractingPalette] = useState<boolean>(false);
+  const [selectedColorIndices, setSelectedColorIndices] = useState<number[]>([]);
 
   // Estados de UI y Canvas
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -51,6 +69,11 @@ export default function Home() {
   const [isPanning, setIsPanning] = useState<boolean>(false);
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
   const [isMounted, setIsMounted] = useState<boolean>(false);
+
+  // Estados de Exportación PRO
+  const [showExportMenu, setShowExportMenu] = useState<boolean>(false);
+  const [isExportingDxf, setIsExportingDxf] = useState<boolean>(false);
+  const [isExportingZip, setIsExportingZip] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -109,7 +132,7 @@ export default function Home() {
         const scaleChange = newZoom / currentZoom;
         const currentPan = panRef.current;
 
-        // Proyección hacia la posición del cursor
+        // Proyección anclada hacia la posición del cursor
         const newPanX = mouseX - (mouseX - currentPan.x) * scaleChange;
         const newPanY = mouseY - (mouseY - currentPan.y) * scaleChange;
 
@@ -181,6 +204,22 @@ export default function Home() {
     };
   }, []);
 
+  // Cerrar menú de exportación al hacer clic fuera
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("#export-dropdown-container")) {
+        setShowExportMenu(false);
+      }
+    };
+    if (showExportMenu) {
+      window.addEventListener("click", handleClickOutside);
+    }
+    return () => {
+      window.removeEventListener("click", handleClickOutside);
+    };
+  }, [showExportMenu]);
+
   // Limpieza de Object URLs para evitar fugas de memoria
   useEffect(() => {
     return () => {
@@ -188,6 +227,52 @@ export default function Home() {
       if (vectorUrl) URL.revokeObjectURL(vectorUrl);
     };
   }, [previewUrl, vectorUrl]);
+
+  // Extracción automática de paleta al cambiar cantidad de colores o eliminar fondo
+  useEffect(() => {
+    if (!file || colorCount <= 0) {
+      setCustomPalette([]);
+      setOriginalPalette([]);
+      setSelectedColorIndices([]);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const fetchPalette = async () => {
+      setIsExtractingPalette(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("color_count", colorCount.toString());
+        formData.append("remove_background", removeBackground ? "true" : "false");
+
+        const res = await fetch(`${BACKEND_URL}/api/palette`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) throw new Error("Fallo al analizar paleta");
+
+        const data = await res.json();
+        if (!isCancelled && data.colors && Array.isArray(data.colors)) {
+          setCustomPalette(data.colors);
+          setOriginalPalette(data.colors);
+          setSelectedColorIndices([]);
+        }
+      } catch (err) {
+        console.error("Error al extraer paleta K-Means:", err);
+      } finally {
+        if (!isCancelled) setIsExtractingPalette(false);
+      }
+    };
+
+    fetchPalette();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [file, colorCount, removeBackground]);
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 Bytes";
@@ -223,9 +308,25 @@ export default function Home() {
     setVectorUrl(null);
     setZoom(100);
     setPan({ x: 0, y: 0 });
+    setSelectedColorIndices([]);
+    setShowExportMenu(false);
 
     const originalUrl = URL.createObjectURL(selectedFile);
     setPreviewUrl(originalUrl);
+
+    // Detección de resolución e inspección para sugerir Super-Resolución 4x
+    const imgTest = new window.Image();
+    imgTest.src = originalUrl;
+    imgTest.onload = () => {
+      const w = imgTest.naturalWidth;
+      const h = imgTest.naturalHeight;
+      setImageDimensions({ width: w, height: h });
+      const isSmall = w < 600 || h < 600;
+      setIsLowRes(isSmall);
+      if (isSmall) {
+        setSuperResolution(true);
+      }
+    };
   };
 
   const handleVectorize = async () => {
@@ -233,6 +334,7 @@ export default function Home() {
 
     setIsLoading(true);
     setError(null);
+    setShowExportMenu(false);
 
     try {
       const formData = new FormData();
@@ -240,6 +342,11 @@ export default function Home() {
       formData.append("remove_background", removeBackground ? "true" : "false");
       formData.append("color_count", colorCount.toString());
       formData.append("detail_level", detailLevel);
+      formData.append("super_resolution", superResolution ? "true" : "false");
+
+      if (colorCount > 0 && customPalette.length > 0) {
+        formData.append("custom_palette", customPalette.join(","));
+      }
 
       const response = await fetch(`${BACKEND_URL}/api/vectorize`, {
         method: "POST",
@@ -280,6 +387,44 @@ export default function Home() {
     }
   };
 
+  // Edición y Fusión de la Paleta
+  const handleColorChange = (index: number, newHex: string) => {
+    setCustomPalette((prev) => {
+      const next = [...prev];
+      next[index] = newHex.toUpperCase();
+      return next;
+    });
+  };
+
+  const toggleSelectColor = (index: number) => {
+    setSelectedColorIndices((prev) => {
+      if (prev.includes(index)) {
+        return prev.filter((i) => i !== index);
+      } else {
+        if (prev.length >= 2) {
+          return [prev[1], index];
+        }
+        return [...prev, index];
+      }
+    });
+  };
+
+  const handleMergeColors = () => {
+    if (selectedColorIndices.length !== 2) return;
+    const [targetIdx, sourceIdx] = selectedColorIndices;
+    const targetColor = customPalette[targetIdx];
+    // Elimina el color de origen y conserva el color destino
+    const newPalette = customPalette.filter((_, idx) => idx !== sourceIdx);
+    setCustomPalette(newPalette);
+    setSelectedColorIndices([]);
+  };
+
+  const handleResetPalette = () => {
+    setCustomPalette([...originalPalette]);
+    setSelectedColorIndices([]);
+  };
+
+  // Descargas y Exportaciones
   const handleDownloadSvg = () => {
     if (!vectorUrl || !file) return;
     const baseName =
@@ -292,6 +437,84 @@ export default function Home() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setShowExportMenu(false);
+  };
+
+  const handleDownloadDxf = async () => {
+    if (!vectorUrl || !file) return;
+    setIsExportingDxf(true);
+    setShowExportMenu(false);
+    try {
+      const svgRes = await fetch(vectorUrl);
+      const svgText = await svgRes.text();
+      const baseName =
+        file.name.substring(0, file.name.lastIndexOf(".")) || "vectorizado";
+
+      const formData = new FormData();
+      formData.append("svg_content", svgText);
+      formData.append("filename", `${baseName}_traceai`);
+
+      const response = await fetch(`${BACKEND_URL}/api/export/dxf`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error("Error en el servidor al generar DXF.");
+
+      const dxfBlob = await response.blob();
+      const downloadUrl = URL.createObjectURL(dxfBlob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `${baseName}_traceai.dxf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      console.error("Error al exportar DXF:", err);
+      setError("No fue posible generar el archivo DXF.");
+    } finally {
+      setIsExportingDxf(false);
+    }
+  };
+
+  const handleDownloadLayersZip = async () => {
+    if (!vectorUrl || !file) return;
+    setIsExportingZip(true);
+    setShowExportMenu(false);
+    try {
+      const svgRes = await fetch(vectorUrl);
+      const svgText = await svgRes.text();
+      const baseName =
+        file.name.substring(0, file.name.lastIndexOf(".")) || "vectorizado";
+
+      const formData = new FormData();
+      formData.append("svg_content", svgText);
+      formData.append("filename", `${baseName}_traceai`);
+
+      const response = await fetch(`${BACKEND_URL}/api/export/layers-zip`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok)
+        throw new Error("Error en el servidor al generar el ZIP por capas.");
+
+      const zipBlob = await response.blob();
+      const downloadUrl = URL.createObjectURL(zipBlob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `${baseName}_traceai_capas.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      console.error("Error al exportar capas ZIP:", err);
+      setError("No fue posible generar el archivo ZIP por capas.");
+    } finally {
+      setIsExportingZip(false);
+    }
   };
 
   const handleReset = () => {
@@ -303,6 +526,13 @@ export default function Home() {
     setError(null);
     setZoom(100);
     setPan({ x: 0, y: 0 });
+    setSuperResolution(false);
+    setIsLowRes(false);
+    setImageDimensions(null);
+    setCustomPalette([]);
+    setOriginalPalette([]);
+    setSelectedColorIndices([]);
+    setShowExportMenu(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -320,7 +550,6 @@ export default function Home() {
       return;
     }
 
-    // Permitir arrastre con botón primario (0) o central (1)
     if (e.button === 0 || e.button === 1) {
       e.preventDefault();
       setIsPanning(true);
@@ -382,7 +611,7 @@ export default function Home() {
               Trace<span className="text-cyan-400">AI</span>
             </span>
             <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-indigo-300">
-              Studio
+              Studio Pro
             </span>
           </div>
         </div>
@@ -392,6 +621,11 @@ export default function Home() {
             <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
             <span className="font-medium truncate max-w-xs">{file.name}</span>
             <span className="text-slate-500 font-mono">({fileSize})</span>
+            {imageDimensions && (
+              <span className="text-cyan-400/80 font-mono text-[11px]">
+                [{imageDimensions.width}x{imageDimensions.height}px]
+              </span>
+            )}
           </div>
         )}
 
@@ -418,14 +652,72 @@ export default function Home() {
         {/* ======================================================== */}
         {/* SIDEBAR IZQUIERDO: Panel de Controles                    */}
         {/* ======================================================== */}
-        <aside className="w-full lg:w-84 xl:w-92 border-b lg:border-b-0 lg:border-r border-white/5 bg-[#090D18]/95 backdrop-blur-xl flex flex-col justify-between shrink-0 z-20 overflow-y-auto">
-          <div className="p-5 space-y-6">
+        <aside className="w-full lg:w-88 xl:w-96 border-b lg:border-b-0 lg:border-r border-white/5 bg-[#090D18]/95 backdrop-blur-xl flex flex-col justify-between shrink-0 z-20 overflow-y-auto">
+          <div className="p-5 space-y-5">
             <div className="flex items-center justify-between border-b border-white/5 pb-3">
               <div className="flex items-center gap-2 text-sm font-semibold text-white">
                 <Sliders className="w-4 h-4 text-indigo-400" />
                 <span>Parámetros de IA</span>
               </div>
-              <span className="text-[11px] text-slate-400 font-mono">Pipeline v0.2</span>
+              <span className="text-[11px] text-cyan-400 font-mono">Pro v0.3</span>
+            </div>
+
+            {/* Control 0: Super-Resolución IA 4x (Real-ESRGAN) */}
+            <div
+              className={`rounded-xl border p-4 transition-all ${
+                superResolution
+                  ? "border-amber-500/30 bg-amber-500/[0.04]"
+                  : "border-white/5 bg-white/[0.02] hover:border-white/10"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                      superResolution
+                        ? "bg-amber-500/20 border border-amber-500/40 text-amber-300 shadow-md shadow-amber-500/10"
+                        : "bg-white/5 border border-white/10 text-slate-400"
+                    }`}
+                  >
+                    <Zap className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="super-res-toggle"
+                      className="text-xs font-semibold text-slate-200 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>Super-Resolución 4x (IA)</span>
+                    </label>
+                    <p className="text-[11px] text-slate-400">
+                      Reconstruye píxeles con Real-ESRGAN
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  id="super-res-toggle"
+                  type="button"
+                  role="switch"
+                  aria-checked={superResolution}
+                  onClick={() => setSuperResolution(!superResolution)}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer ${
+                    superResolution ? "bg-amber-500" : "bg-slate-700/60"
+                  }`}
+                >
+                  <div
+                    className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                      superResolution ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {isLowRes && (
+                <div className="mt-2.5 flex items-center gap-1.5 px-2 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300 animate-in fade-in">
+                  <Sparkles className="w-3 h-3 shrink-0 animate-pulse" />
+                  <span>Imagen baja resolución detectada • 4x activado</span>
+                </div>
+              )}
             </div>
 
             {/* Control 1: Eliminar Fondo con IA */}
@@ -446,7 +738,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Toggle Switch */}
                 <button
                   id="remove-bg-toggle"
                   type="button"
@@ -466,14 +757,26 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Control 2: Paleta de Colores (K-Means) */}
+            {/* Control 2: Paleta de Colores y Editor Interactivo */}
             <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-colors hover:border-white/10 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                <Palette className="w-4 h-4 text-purple-400" />
-                <span>Paleta de Colores</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                  <Palette className="w-4 h-4 text-purple-400" />
+                  <span>Paleta de Colores</span>
+                </div>
+                {colorCount > 0 && customPalette.length > 0 && (
+                  <button
+                    onClick={handleResetPalette}
+                    title="Restablecer a colores detectados inicialmente"
+                    className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>Restablecer</span>
+                  </button>
+                )}
               </div>
               <p className="text-[11px] text-slate-400 leading-normal">
-                Reduce y agrupa a una cantidad fija con K-Means (ideal para logos y serigrafía).
+                Cuantiza con K-Means para aislar plastas sólidas de color.
               </p>
 
               <div className="relative">
@@ -490,6 +793,104 @@ export default function Home() {
                 </select>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5 pointer-events-none" />
               </div>
+
+              {/* EDITOR INTERACTIVO DE PALETA (K-Means + Edición Hex + Fusión) */}
+              {colorCount > 0 && file && (
+                <div className="pt-2 border-t border-white/5 space-y-3 animate-in fade-in duration-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                      <Pipette className="w-3 h-3 text-cyan-400" />
+                      <span>Colores Detectados ({customPalette.length}):</span>
+                    </span>
+                    {isExtractingPalette && (
+                      <span className="text-[10px] text-cyan-400 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>Analizando...</span>
+                      </span>
+                    )}
+                  </div>
+
+                  {customPalette.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-4 gap-2 bg-[#080C16] p-2.5 rounded-xl border border-white/5">
+                        {customPalette.map((colorHex, idx) => {
+                          const isSelected = selectedColorIndices.includes(idx);
+                          return (
+                            <div
+                              key={`${idx}-${colorHex}`}
+                              className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border transition-all ${
+                                isSelected
+                                  ? "border-cyan-400 bg-cyan-500/10 shadow-sm shadow-cyan-500/20"
+                                  : "border-white/5 bg-white/[0.02] hover:border-white/20"
+                              }`}
+                            >
+                              <div className="relative group">
+                                <label
+                                  htmlFor={`color-input-${idx}`}
+                                  className="block w-7 h-7 rounded-full cursor-pointer shadow-inner border border-white/20 transition-transform group-hover:scale-105"
+                                  style={{ backgroundColor: colorHex }}
+                                  title={`Editar ${colorHex} (Clic para cambiar)`}
+                                />
+                                <input
+                                  id={`color-input-${idx}`}
+                                  type="color"
+                                  value={colorHex}
+                                  onChange={(e) =>
+                                    handleColorChange(idx, e.target.value)
+                                  }
+                                  className="sr-only"
+                                />
+                              </div>
+
+                              <span className="text-[9px] font-mono text-slate-300 font-semibold tracking-tighter truncate max-w-[50px]">
+                                {colorHex}
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={() => toggleSelectColor(idx)}
+                                title={
+                                  isSelected
+                                    ? "Deseleccionar para fusión"
+                                    : "Seleccionar para fusionar con otro color"
+                                }
+                                className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
+                                  isSelected
+                                    ? "bg-cyan-500 text-black font-bold"
+                                    : "bg-white/5 hover:bg-white/10 text-slate-400"
+                                }`}
+                              >
+                                {isSelected ? "Sel" : "Unir"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Botón de Fusión de Colores */}
+                      {selectedColorIndices.length === 2 && (
+                        <button
+                          type="button"
+                          onClick={handleMergeColors}
+                          className="w-full py-2 rounded-lg bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-md shadow-purple-500/20 transition-all animate-in fade-in"
+                        >
+                          <Combine className="w-3.5 h-3.5" />
+                          <span>
+                            Fusionar{" "}
+                            {customPalette[selectedColorIndices[0]]} +{" "}
+                            {customPalette[selectedColorIndices[1]]}
+                          </span>
+                        </button>
+                      )}
+
+                      <p className="text-[10px] text-slate-400 leading-tight">
+                        • Haz clic en el círculo para cambiar el tono Hex.
+                        <br />• Selecciona 2 colores para fusionarlos en uno solo.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Control 3: Nivel de Detalle (Segment Control) */}
@@ -545,7 +946,11 @@ export default function Home() {
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Vectorizando con IA...</span>
+                  <span>
+                    {superResolution
+                      ? "Escalando 4x y Vectorizando..."
+                      : "Vectorizando con IA..."}
+                  </span>
                 </>
               ) : (
                 <>
@@ -554,16 +959,6 @@ export default function Home() {
                 </>
               )}
             </button>
-
-            {vectorUrl && (
-              <button
-                onClick={handleDownloadSvg}
-                className="w-full py-2.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-cyan-300 font-medium text-xs flex items-center justify-center gap-2 transition-all"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Descargar SVG Final</span>
-              </button>
-            )}
           </div>
         </aside>
 
@@ -660,7 +1055,7 @@ export default function Home() {
                       WEBP
                     </span>
                     <span className="px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-[11px] font-mono text-indigo-300">
-                      → SVG Vector
+                      → SVG / DXF / ZIP
                     </span>
                   </div>
                 </div>
@@ -675,7 +1070,9 @@ export default function Home() {
                 className="max-w-2xl max-h-[75vh] p-4 rounded-2xl border border-white/10 bg-[#0B0F19]/80 backdrop-blur-xl shadow-2xl flex items-center justify-center overflow-hidden"
                 style={{
                   transform: `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${zoom / 100})`,
-                  transition: isPanning ? "none" : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
+                  transition: isPanning
+                    ? "none"
+                    : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
                   transformOrigin: "center center",
                   willChange: isPanning ? "transform" : "auto",
                 }}
@@ -693,7 +1090,10 @@ export default function Home() {
               {!isLoading && (
                 <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300 backdrop-blur-md pointer-events-none">
                   <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                  <span>Ajusta las opciones a la izquierda y presiona <strong>Vectorizar</strong></span>
+                  <span>
+                    Ajusta los parámetros a la izquierda y presiona{" "}
+                    <strong>Vectorizar</strong>
+                  </span>
                 </div>
               )}
             </div>
@@ -705,7 +1105,9 @@ export default function Home() {
               className="w-full h-full max-w-4xl max-h-[80vh] flex items-center justify-center relative z-10"
               style={{
                 transform: `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${zoom / 100})`,
-                transition: isPanning ? "none" : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
+                transition: isPanning
+                  ? "none"
+                  : "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
                 transformOrigin: "center center",
                 willChange: isPanning ? "transform" : "auto",
               }}
@@ -781,20 +1183,23 @@ export default function Home() {
                 </div>
               </div>
               <p className="text-base font-bold text-white tracking-tight">
-                Generando Vectores con IA...
+                {superResolution
+                  ? "Escalando 4x con IA & Vectorizando..."
+                  : "Generando Vectores con IA..."}
               </p>
               <p className="text-xs text-slate-400 mt-1.5">
+                {superResolution ? "Super-Resolución Real-ESRGAN • " : ""}
                 {removeBackground
                   ? "Aislando fondo con rembg • "
                   : colorCount > 0
-                  ? `Cuantizando a ${colorCount} colores K-Means • `
+                  ? `Cuantizando a ${customPalette.length || colorCount} colores • `
                   : "Segmentando colores • "}
                 Trazando curvas Bézier ({detailLevel})
               </p>
             </div>
           )}
 
-          {/* Barra de Herramientas Flotante sobre el Canvas (Zoom & Pan & Download) */}
+          {/* Barra de Herramientas Flotante sobre el Canvas (Zoom & Pan & Exportación PRO) */}
           {file && (
             <div className="absolute bottom-6 right-6 z-30 flex items-center gap-2 bg-[#0B0F19]/90 border border-white/10 rounded-2xl p-1.5 backdrop-blur-xl shadow-2xl">
               {/* Indicador de ayuda */}
@@ -833,15 +1238,89 @@ export default function Home() {
                 </button>
               </div>
 
+              {/* Menú de Exportación PRO (SVG, DXF, Capas ZIP) */}
               {vectorUrl && (
-                <button
-                  onClick={handleDownloadSvg}
-                  title="Descargar archivo SVG"
-                  className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-cyan-500 hover:from-indigo-600 hover:to-cyan-600 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-all hover:scale-105 active:scale-95"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Descargar SVG</span>
-                </button>
+                <div id="export-dropdown-container" className="relative">
+                  <div className="flex items-center">
+                    <button
+                      onClick={handleDownloadSvg}
+                      title="Descargar archivo SVG estándar"
+                      className="px-3 py-1.5 rounded-l-xl bg-gradient-to-r from-indigo-500 to-cyan-500 hover:from-indigo-600 hover:to-cyan-600 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-all active:scale-95"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Descargar SVG</span>
+                    </button>
+                    <button
+                      onClick={() => setShowExportMenu(!showExportMenu)}
+                      title="Opciones avanzadas de exportación (DXF, Capas ZIP)"
+                      className="px-2 py-1.5 rounded-r-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs border-l border-white/20 transition-all"
+                    >
+                      {showExportMenu ? (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Menú Flotante Hacia Arriba */}
+                  {showExportMenu && (
+                    <div className="absolute bottom-full right-0 mb-2 w-64 rounded-xl bg-[#0B0F19] border border-white/15 p-2 shadow-2xl backdrop-blur-2xl z-50 space-y-1 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                      <div className="px-2.5 py-1 text-[10px] font-mono text-slate-400 uppercase tracking-wider border-b border-white/5">
+                        Opciones de Exportación PRO
+                      </div>
+
+                      <button
+                        onClick={handleDownloadSvg}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-slate-200 hover:text-white flex items-center gap-2.5 transition-colors"
+                      >
+                        <FileCode2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                        <div>
+                          <div className="font-semibold">Descargar SVG</div>
+                          <div className="text-[10px] text-slate-400">
+                            Vectores estándar para web y diseño
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={handleDownloadDxf}
+                        disabled={isExportingDxf}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-slate-200 hover:text-white flex items-center gap-2.5 transition-colors disabled:opacity-50"
+                      >
+                        {isExportingDxf ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-indigo-400 shrink-0" />
+                        ) : (
+                          <Layers className="w-4 h-4 text-indigo-400 shrink-0" />
+                        )}
+                        <div>
+                          <div className="font-semibold">Descargar DXF</div>
+                          <div className="text-[10px] text-slate-400">
+                            AutoCAD, corte láser y CNC
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={handleDownloadLayersZip}
+                        disabled={isExportingZip}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-slate-200 hover:text-white flex items-center gap-2.5 transition-colors disabled:opacity-50"
+                      >
+                        {isExportingZip ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-purple-400 shrink-0" />
+                        ) : (
+                          <FileArchive className="w-4 h-4 text-purple-400 shrink-0" />
+                        )}
+                        <div>
+                          <div className="font-semibold">Separar por Capas (.ZIP)</div>
+                          <div className="text-[10px] text-slate-400">
+                            Archivos independientes por color
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
