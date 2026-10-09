@@ -36,7 +36,7 @@ graph TD
 | Capa | Tecnologías | Propósito |
 | :--- | :--- | :--- |
 | **Backend** | [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), Python 3.12, [OpenCV](https://opencv.org/), [NumPy](https://numpy.org/), [vtracer](https://github.com/visioncortex/vtracer) | API REST de alto rendimiento, preprocesamiento con segmentación Mean Shift (estilo Vector Magic) y pipeline de vectorización de imágenes. |
-| **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/) | Interfaz SaaS reactiva, carga interactiva de archivos, visualizador de SVG en tiempo real y controles de exportación. |
+| **Frontend** | [Next.js](https://nextjs.org/) (App Router), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS](https://tailwindcss.com/), [Lucide React](https://lucide.dev/) | Interfaz SaaS reactiva, zona interactiva de drag & drop, comparativa visual Antes/Después en tiempo real y descarga de SVG. |
 
 ---
 
@@ -131,6 +131,35 @@ Asegúrate de tener instalados los siguientes componentes en tu entorno:
 
 4. Abre tu navegador en:
    - [http://localhost:3000](http://localhost:3000)
+
+---
+
+### 🧪 Guía de Pruebas del Frontend (Flujo Interactivo)
+
+Con ambos servicios en ejecución (Backend en `http://localhost:8000` y Frontend en `http://localhost:3000`), puedes validar el funcionamiento de extremo a extremo:
+
+1. **Subida Interactiva (Drag & Drop o Explorador):**
+   - Arrastra una imagen (`.png`, `.jpg` o `.jpeg`) sobre la zona central con bordes punteados. Observa cómo el recuadro reacciona visualmente con iluminación cian y escala suave.
+   - O haz clic sobre el área para seleccionar la imagen mediante el explorador de archivos.
+
+2. **Indicador de Procesamiento con IA:**
+   - Observa la transición al estado de carga animado con el mensaje *"Procesando imagen con IA..."* y el flujo de etapas (*Preprocesamiento OpenCV → Vectorización VTracer*).
+
+3. **Comparador "Antes y Después":**
+   - Una vez procesado el archivo, la vista se actualiza automáticamente mostrando:
+     - **Antes (Original):** Imagen en mapa de bits con su peso y formato original.
+     - **Después (SVG Vectorial):** Renderizado vectorial en tiempo real sobre una cuadrícula que permite apreciar recortes y transparencias limpias.
+
+4. **Descarga del Archivo SVG:**
+   - Haz clic en **"Descargar SVG"** para guardar el archivo `.svg` directamente en tu disco local.
+   - Puedes abrir el SVG descargado en cualquier navegador, editor de código o software como Figma e Illustrator para comprobar la nitidez y escalabilidad infinita de los trazos.
+
+5. **Reinicio de Estados:**
+   - Pulsa **"Vectorizar otra imagen"** para reiniciar los estados y liberar recursos de memoria (`URL.revokeObjectURL`).
+
+6. **Comprobación de Errores y Seguridad:**
+   - Prueba a subir un archivo no soportado (como un archivo de texto o ejecutable) para comprobar que el banner de alerta amigable informa el error de forma clara sin romper la aplicación.
+   - Detén temporalmente el backend para validar el mensaje de servidor no disponible.
 
 ---
 
